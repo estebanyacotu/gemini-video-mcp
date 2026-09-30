@@ -8,20 +8,18 @@ from google.genai import types
 from mcp.server.fastmcp import FastMCP
 from youtube_transcript_api import YouTubeTranscriptApi
 
-# Puerto de Render y modelo
+# Puerto de Render y configuración
 PORT = int(os.environ.get("PORT", 8000))
-MODEL = "gemini-3.8-flash"  # Modelo rápido y estable
+MODEL = "gemini-3.8-flash"
 
 mcp = FastMCP("Gemini Video Analyzer", port=PORT, host="0.0.0.0")
-
-# Cliente con timeout extendido para evitar desconexiones prematuras
 client = genai.Client(
     api_key=os.environ.get("GEMINI_API_KEY"), http_options={"timeout": 300}
 )
 
 
 def extract_youtube_id(url: str) -> str | None:
-  """Extrae de forma segura el ID de YouTube sin romper por splits."""
+  """Extrae de forma segura el ID de YouTube sin usar split."""
   if not url:
     return None
   match = re.search(
@@ -55,15 +53,12 @@ def analizar_video(
       with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as temp:
         local_path = temp.name
 
-      # Descargar archivo temporal enviado por ChatGPT
       urllib.request.urlretrieve(download_url, local_path)
 
-      # Subir a la Files API de Gemini
       gemini_file = client.files.upload(
           file=local_path, config=types.UploadFileConfig(mime_type="video/mp4")
       )
 
-      # Esperar a que Gemini procese el archivo (máximo 60 segundos)
       for _ in range(30):
         state = getattr(getattr(gemini_file, "state", None), "name", None)
         if state == "ACTIVE":
@@ -73,7 +68,6 @@ def analizar_video(
         time.sleep(2)
         gemini_file = client.files.get(name=gemini_file.name)
 
-      # Análisis multimodal del video
       response = client.models.generate_content(
           model=MODEL, contents=[gemini_file, instruccion]
       )
@@ -92,7 +86,7 @@ def analizar_video(
 
       canonical_url = f"https://www.youtube.com/watch?v={v_id}"
 
-      # 1. Intento multimodal directo con Gemini
+      # Intento multimodal nativo
       try:
         response = client.models.generate_content(
             model=MODEL,
@@ -109,7 +103,7 @@ def analizar_video(
             else "No se pudo generar el análisis."
         )
       except Exception:
-        # 2. Respaldo anti-timeout/cuota: extrae transcripción y analiza texto
+        # Respaldo por transcripción para evitar cuotas o timeouts
         try:
           transcript = YouTubeTranscriptApi.get_transcript(
               v_id, languages=["es", "es-419", "en"]
@@ -118,7 +112,7 @@ def analizar_video(
           response = client.models.generate_content(
               model=MODEL,
               contents=[
-                  f"Contexto del video de YouTube ({canonical_url}):\n\n{texto[:45000]}",
+                  f"Transcripción del video ({canonical_url}):\n\n{texto[:45000]}",
                   instruccion,
               ],
           )
@@ -137,12 +131,11 @@ def analizar_video(
       return (
           "Aviso de cuota (Error 429): El video excede el límite de tokens por"
           " minuto del nivel gratuito de Gemini. Prueba con un video más corto"
-          " (menos de 2-3 minutos) o espera un minuto antes de reintentar."
+          " o espera un minuto antes de reintentar."
       )
     return f"Error al procesar con Gemini: {error_msg}"
 
   finally:
-    # Limpieza de archivos temporales
     if local_path and os.path.exists(local_path):
       try:
         os.remove(local_path)

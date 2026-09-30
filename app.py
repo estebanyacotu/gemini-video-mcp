@@ -2,341 +2,111 @@ import os
 import time
 import tempfile
 import urllib.request
-import logging
-import re
-from urllib.parse import parse_qs, urlsplit
-
-from typing_extensions import TypedDict, Required, NotRequired
-
 from mcp.server.fastmcp import FastMCP
 from google import genai
 from google.genai import types
 
-
-# ---------------------------------------------------------
-# CONFIGURACIÓN
-# ---------------------------------------------------------
-
+# Puerto de Render y modelo optimizado para cuenta gratuita
 PORT = int(os.environ.get("PORT", 8000))
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
-logger = logging.getLogger(__name__)
+MODEL = "gemini-3-flash-preview"
 
-mcp = FastMCP(
-    "Gemini Video Analyzer",
-    port=PORT,
-    host="0.0.0.0",
-)
+mcp = FastMCP("Gemini Video Analyzer", port=PORT, host="0.0.0.0")
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-client = genai.Client(
-    api_key=os.environ.get("GEMINI_API_KEY"),
-    http_options=types.HttpOptions(
-        timeout=30_000,
-        retry_options=types.HttpRetryOptions(
-            attempts=3,
-            initial_delay=2.0,
-            max_delay=15.0,
-            exp_base=2.0,
-            jitter=1.0,
-            http_status_codes=[408, 429, 500, 502, 503, 504],
-        ),
-    ),
-)
-
-
-# ---------------------------------------------------------
-# ESQUEMA OFICIAL DE ARCHIVO DE OPENAI
-# ---------------------------------------------------------
-
-class OpenAIFile(TypedDict):
-    download_url: Required[str]
-    file_id: Required[str]
-    mime_type: NotRequired[str]
-    file_name: NotRequired[str]
-
-
-def normalize_youtube_url(url: str) -> str:
-    """Validar el dominio real y normalizar watch, live, shorts y youtu.be."""
-    parsed = urlsplit(url.strip())
-    if parsed.scheme not in {"https", "http"} or parsed.username or parsed.password:
-        raise ValueError("Introduce una URL pública válida de YouTube.")
-
-    host = (parsed.hostname or "").lower()
-    segments = parsed.path.strip("/").split("/")
-    if host == "youtu.be":
-        video_id = segments[0]
-    elif host in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
-        if parsed.path == "/watch":
-            video_id = parse_qs(parsed.query).get("v", [""])[0]
-        elif len(segments) == 2 and segments[0] in {"live", "shorts", "embed"}:
-            video_id = segments[1]
-        else:
-            raise ValueError("La URL debe apuntar a un video de YouTube.")
-    else:
-        raise ValueError("Este campo admite enlaces de YouTube; adjunta otros videos como archivo.")
-
-    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
-        raise ValueError("El enlace de YouTube no contiene un ID de video válido.")
-    return "https://www.youtube.com/watch?v=" + video_id
-
-
-# ---------------------------------------------------------
-# DESCARGAR ARCHIVO DE CHATGPT
-# ---------------------------------------------------------
-
-def download_openai_file(
-    download_url: str,
-    destination: str,
-    max_bytes: int = 500 * 1024 * 1024,
-):
-    request = urllib.request.Request(
-        download_url,
-        headers={
-            "User-Agent": "Gemini-Video-Plugin/1.0"
-        },
-    )
-
-    total = 0
-
-    with urllib.request.urlopen(
-        request,
-        timeout=60,
-    ) as response:
-
-        with open(destination, "wb") as output:
-
-            while True:
-                chunk = response.read(1024 * 1024)
-
-                if not chunk:
-                    break
-
-                total += len(chunk)
-
-                if total > max_bytes:
-                    raise ValueError(
-                        "El archivo supera el límite permitido."
-                    )
-
-                output.write(chunk)
-
-
-# ---------------------------------------------------------
-# ESPERAR A GEMINI
-# ---------------------------------------------------------
-
-def wait_until_active(
-    gemini_file,
-    timeout_seconds: int = 90,
-):
-    deadline = time.monotonic() + timeout_seconds
-
-    while True:
-
-        state = getattr(
-            getattr(gemini_file, "state", None),
-            "name",
-            None,
-        )
-
-        if state == "ACTIVE":
-            return gemini_file
-
-        if state in {
-            "FAILED",
-            "ERROR",
-            "CANCELLED",
-        }:
-            raise RuntimeError(
-                f"Gemini no pudo procesar el video. "
-                f"Estado: {state}"
-            )
-
-        if state != "PROCESSING":
-            raise RuntimeError(f"Estado de archivo inesperado en Gemini: {state}")
-
-        if time.monotonic() >= deadline:
-            raise TimeoutError(
-                "Gemini tardó demasiado procesando el video."
-            )
-
-        time.sleep(min(3, max(0, deadline - time.monotonic())))
-        gemini_file = client.files.get(name=gemini_file.name)
-
-
-# ---------------------------------------------------------
-# TOOL PRINCIPAL
-# ---------------------------------------------------------
-
-@mcp.tool(
-    meta={
-        "openai/fileParams": ["video"]
-    }
-)
+@mcp.tool(meta={"openai/fileParams": ["video"]})
 def analizar_video(
-    video: OpenAIFile | None = None,
-    url: str | None = None,
-    instruccion: str = (
-        "Analiza detalladamente este video. "
-        "Identifica puntos clave, marcas de tiempo, "
-        "transcripción relevante y mejores momentos."
-    ),
+    video: dict = None,
+    url: str = None,
+    instruccion: str = "Analiza detalladamente este video. Identifica los puntos clave, marcas de tiempo y mejores momentos."
 ) -> str:
-    """
-    Analiza un MP4 adjunto desde ChatGPT
-    o una URL pública de YouTube usando Gemini.
-    """
-
+    """Analiza un video MP4 adjunto en ChatGPT o una URL de YouTube usando Gemini."""
     local_path = None
     gemini_file = None
-    stage = "validación de entrada"
 
     try:
+        download_url = None
+        if isinstance(video, dict):
+            download_url = video.get("download_url") or video.get("url")
+        elif isinstance(video, str) and video.startswith("http"):
+            download_url = video
 
-        if video is not None and url:
-            raise ValueError("Envía un archivo adjunto o un enlace, uno por solicitud.")
-
-        # =================================================
-        # CASO 1 — MP4 ADJUNTO EN CHATGPT
-        # =================================================
-
-        if video:
-
-            download_url = video["download_url"]
-
-            file_name = video.get(
-                "file_name",
-                "video.mp4",
-            )
-
-            suffix = os.path.splitext(file_name)[1]
-
-            if not suffix:
-                suffix = ".mp4"
-
-            with tempfile.NamedTemporaryFile(
-                suffix=suffix,
-                delete=False,
-            ) as temp:
+        # CASO 1: Archivo MP4 adjunto desde el celular
+        if download_url:
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as temp:
                 local_path = temp.name
 
-            # Descargar archivo temporal de OpenAI
-            stage = "descarga del archivo adjunto"
-            download_openai_file(
-                download_url,
-                local_path,
-            )
+            # Descargar archivo temporal enviado por ChatGPT
+            urllib.request.urlretrieve(download_url, local_path)
 
-            # Subir archivo a Gemini
-            stage = "subida del archivo a Gemini"
+            # Subir a la Files API de Gemini
             gemini_file = client.files.upload(
                 file=local_path,
-                config=types.UploadFileConfig(
-                    mime_type=video.get("mime_type") or "video/mp4"
-                ),
+                config=types.UploadFileConfig(mime_type="video/mp4")
             )
 
-            # Esperar hasta que Gemini termine de procesarlo
-            stage = "procesamiento del archivo en Gemini"
-            gemini_file = wait_until_active(
-                gemini_file
-            )
+            # Esperar a que Gemini procese el archivo (máximo 60 segundos)
+            for _ in range(30):
+                state = getattr(getattr(gemini_file, "state", None), "name", None)
+                if state == "ACTIVE":
+                    break
+                if state in {"FAILED", "ERROR"}:
+                    raise RuntimeError("Gemini no pudo procesar este formato de video.")
+                time.sleep(2)
+                gemini_file = client.files.get(name=gemini_file.name)
 
-            # Analizar video + audio
-            stage = "análisis del video en Gemini"
+            # Análisis multimodal del video
+            try:
+                response = client.models.generate_content(
+                    model=MODEL,
+                    contents=[gemini_file, instruccion]
+                )
+            except Exception as e:
+                # Si el modelo preview da 429, reintenta con 3.8 flash
+                response = client.models.generate_content(
+                    model="gemini-3.8-flash",
+                    contents=[gemini_file, instruccion]
+                )
+
+            return response.text if response.text else "No se pudo extraer texto del análisis."
+
+        # CASO 2: Enlace de YouTube
+        target_url = url or (isinstance(video, str) and video)
+        if target_url:
+            if "youtube.com/live/" in target_url:
+                target_url = target_url.replace("youtube.com/live/", "youtube.com/watch?v=")
+            elif "youtu.be/" in target_url:
+                v_id = target_url.split("youtu.be/").split("?")[0]
+                target_url = f"https://www.youtube.com/watch?v={v_id}"
+
             response = client.models.generate_content(
                 model=MODEL,
                 contents=[
-                    gemini_file,
-                    instruccion,
-                ],
+                    types.Part.from_uri(file_uri=target_url, mime_type="video/*"),
+                    instruccion
+                ]
             )
+            return response.text if response.text else "No se pudo generar el análisis."
 
-            if not response.text:
-                raise RuntimeError("Gemini no devolvió texto de análisis.")
-            return response.text
+        return "Por favor adjunta un archivo de video MP4 o ingresa un enlace de YouTube."
 
-
-        # =================================================
-        # CASO 2 — URL DE YOUTUBE
-        # =================================================
-
-        if url:
-
-            video_url = normalize_youtube_url(url)
-
-            stage = "análisis del enlace de YouTube en Gemini"
-            interaction = client.interactions.create(
-                model=MODEL,
-                input=[
-                    {
-                        "type": "text",
-                        "text": instruccion,
-                    },
-                    {
-                        "type": "video",
-                        "uri": video_url,
-                    },
-                ],
-            )
-
-            if not interaction.output_text:
-                raise RuntimeError("Gemini no devolvió texto de análisis.")
-            return interaction.output_text
-
-
-        raise ValueError(
-            "No se detectó un video adjunto "
-            "ni una URL de YouTube."
-        )
-
-
-    except (ValueError, TimeoutError):
-        raise
-    except Exception as error:
-        code = getattr(error, "code", None)
-        logger.warning("Fallo en %s: %s, código=%s", stage, type(error).__name__, code)
-        if code == 503:
-            message = "Gemini sigue temporalmente no disponible tras los reintentos. Prueba más tarde."
-        elif code == 429:
-            message = "Gemini devolvió 429 tras los reintentos. Revisa la cuota y los límites de tu cuenta."
-        else:
-            message = f"Fallo en {stage} ({type(error).__name__}, código={code})."
-        # Una excepción produce isError=true en MCP, en lugar de un éxito falso.
-        raise RuntimeError(message) from None
-
+    except Exception as e:
+        error_msg = str(e)
+        if "429" in error_msg:
+            return "Aviso de cuota (Error 429): El video excede el límite de tokens por minuto del nivel gratuito de Gemini. Prueba con un video más corto (menos de 2-3 minutos) o espera un minuto antes de reintentar."
+        return f"Error al procesar con Gemini: {error_msg}"
 
     finally:
-
-        # Borrar copia temporal del servidor
+        # Limpieza de archivos temporales
         if local_path and os.path.exists(local_path):
-
             try:
                 os.remove(local_path)
-
-            except Exception as error:
-                logger.warning("No se pudo borrar el temporal local: %s", type(error).__name__)
-
-
-        # Borrar copia subida a Gemini
-        if (
-            gemini_file
-            and getattr(gemini_file, "name", None)
-        ):
-
+            except Exception:
+                pass
+        if gemini_file and getattr(gemini_file, "name", None):
             try:
-                client.files.delete(
-                    name=gemini_file.name
-                )
-
-            except Exception as error:
-                logger.warning("No se pudo borrar la copia en Gemini: %s", type(error).__name__)
-
-
-# ---------------------------------------------------------
-# SERVER
-# ---------------------------------------------------------
+                client.files.delete(name=gemini_file.name)
+            except Exception:
+                pass
 
 if __name__ == "__main__":
-    mcp.run(
-        transport="sse"
-    )
+    mcp.run(transport="sse")

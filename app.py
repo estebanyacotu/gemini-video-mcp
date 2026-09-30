@@ -30,9 +30,9 @@ mcp = FastMCP(
 client = genai.Client(
     api_key=os.environ.get("GEMINI_API_KEY"),
     http_options=types.HttpOptions(
-        timeout=120_000,
+        timeout=30_000,
         retry_options=types.HttpRetryOptions(
-            attempts=4,
+            attempts=3,
             initial_delay=2.0,
             max_delay=15.0,
             exp_base=2.0,
@@ -99,7 +99,7 @@ def download_openai_file(
 
     with urllib.request.urlopen(
         request,
-        timeout=120,
+        timeout=60,
     ) as response:
 
         with open(destination, "wb") as output:
@@ -126,7 +126,7 @@ def download_openai_file(
 
 def wait_until_active(
     gemini_file,
-    timeout_seconds: int = 600,
+    timeout_seconds: int = 90,
 ):
     deadline = time.monotonic() + timeout_seconds
 

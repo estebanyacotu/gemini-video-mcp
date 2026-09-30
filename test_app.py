@@ -146,7 +146,7 @@ class VideoTests(unittest.TestCase):
         self.assertTrue(result.root.isError)
 
     def test_sdk_limits_retries_and_does_not_retry_400(self):
-        for code, expected_attempts in [(503, 4), (400, 1)]:
+        for code, expected_attempts in [(503, 3), (400, 1)]:
             requests = []
 
             def handler(request):

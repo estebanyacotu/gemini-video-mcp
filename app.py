@@ -2,106 +2,310 @@ import os
 import time
 import tempfile
 import urllib.request
+
+from typing import TypedDict
+from typing_extensions import Required, NotRequired
+
 from mcp.server.fastmcp import FastMCP
 from google import genai
-from google.genai import types
 
-port = int(os.environ.get("PORT", 8000))
-mcp = FastMCP("Gemini Video Analyzer", port=port, host="0.0.0.0")
 
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+# ---------------------------------------------------------
+# CONFIGURACIÓN
+# ---------------------------------------------------------
 
-@mcp.tool(meta={"openai/fileParams": ["video"]})
+PORT = int(os.environ.get("PORT", 8000))
+
+mcp = FastMCP(
+    "Gemini Video Analyzer",
+    port=PORT,
+    host="0.0.0.0",
+)
+
+client = genai.Client(
+    api_key=os.environ.get("GEMINI_API_KEY")
+)
+
+
+# ---------------------------------------------------------
+# ESQUEMA OFICIAL DE ARCHIVO DE OPENAI
+# ---------------------------------------------------------
+
+class OpenAIFile(TypedDict):
+    download_url: Required[str]
+    file_id: Required[str]
+    mime_type: NotRequired[str]
+    file_name: NotRequired[str]
+
+
+# ---------------------------------------------------------
+# DESCARGAR ARCHIVO DE CHATGPT
+# ---------------------------------------------------------
+
+def download_openai_file(
+    download_url: str,
+    destination: str,
+    max_bytes: int = 500 * 1024 * 1024,
+):
+    request = urllib.request.Request(
+        download_url,
+        headers={
+            "User-Agent": "Gemini-Video-Plugin/1.0"
+        },
+    )
+
+    total = 0
+
+    with urllib.request.urlopen(
+        request,
+        timeout=120,
+    ) as response:
+
+        with open(destination, "wb") as output:
+
+            while True:
+                chunk = response.read(1024 * 1024)
+
+                if not chunk:
+                    break
+
+                total += len(chunk)
+
+                if total > max_bytes:
+                    raise ValueError(
+                        "El archivo supera el límite permitido."
+                    )
+
+                output.write(chunk)
+
+
+# ---------------------------------------------------------
+# ESPERAR A GEMINI
+# ---------------------------------------------------------
+
+def wait_until_active(
+    gemini_file,
+    timeout_seconds: int = 600,
+):
+    start = time.time()
+
+    while True:
+
+        gemini_file = client.files.get(
+            name=gemini_file.name
+        )
+
+        state = getattr(
+            getattr(gemini_file, "state", None),
+            "name",
+            None,
+        )
+
+        if state == "ACTIVE":
+            return gemini_file
+
+        if state in {
+            "FAILED",
+            "ERROR",
+            "CANCELLED",
+        }:
+            raise RuntimeError(
+                f"Gemini no pudo procesar el video. "
+                f"Estado: {state}"
+            )
+
+        if time.time() - start > timeout_seconds:
+            raise TimeoutError(
+                "Gemini tardó demasiado procesando el video."
+            )
+
+        time.sleep(3)
+
+
+# ---------------------------------------------------------
+# TOOL PRINCIPAL
+# ---------------------------------------------------------
+
+@mcp.tool(
+    meta={
+        "openai/fileParams": ["video"]
+    }
+)
 def analizar_video(
-    video: dict = None,
-    url: str = None,
-    instruccion: str = "Analiza detalladamente los puntos clave, marcas de tiempo y mejores momentos del video."
+    video: OpenAIFile | None = None,
+    url: str | None = None,
+    instruccion: str = (
+        "Analiza detalladamente este video. "
+        "Identifica puntos clave, marcas de tiempo, "
+        "transcripción relevante y mejores momentos."
+    ),
 ) -> str:
-    """Analiza un video adjunto en ChatGPT (MP4) o una URL de YouTube usando Gemini Multimodal."""
-    target_file_path = None
+    """
+    Analiza un MP4 adjunto desde ChatGPT
+    o una URL pública de YouTube usando Gemini.
+    """
+
+    local_path = None
     gemini_file = None
 
     try:
-        # Detectar si ChatGPT entregó un archivo adjunto
-        download_url = None
-        if isinstance(video, dict):
-            download_url = video.get("download_url") or video.get("url")
-        elif isinstance(video, str) and video.startswith("http"):
-            download_url = video
 
-        # CASO 1: Archivo MP4 subido desde el celular en ChatGPT
-        if download_url:
-            tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-            target_file_path = tmp.name
-            tmp.close()
+        # =================================================
+        # CASO 1 — MP4 ADJUNTO EN CHATGPT
+        # =================================================
 
-            # Descargar archivo temporal
-            urllib.request.urlretrieve(download_url, target_file_path)
+        if video:
 
-            # Subir a la Files API de Gemini
-            gemini_file = client.files.upload(file=target_file_path)
+            download_url = video["download_url"]
 
-            # Esperar procesamiento de Gemini
-            while hasattr(gemini_file, 'state') and getattr(gemini_file.state, 'name', '') == "PROCESSING":
-                time.sleep(2)
-                gemini_file = client.files.get(name=gemini_file.name)
-
-            # Analizar video completo (imagen + audio)
-            res = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=[gemini_file, instruccion]
+            file_name = video.get(
+                "file_name",
+                "video.mp4",
             )
-            return res.text
 
-        # CASO 2: Enlace de YouTube o video web
-        video_url = url or (isinstance(video, str) and not video.startswith("{") and video)
-        if video_url:
-            # Normalizar directos o enlaces cortos
-            if "youtube.com/live/" in video_url:
-                video_url = video_url.replace("youtube.com/live/", "youtube.com/watch?v=")
-            elif "youtu.be/" in video_url:
-                v_id = video_url.split("youtu.be/").split("?")[0]
-                video_url = f"https://www.youtube.com/watch?v={v_id}"
+            suffix = os.path.splitext(file_name)[1]
 
-            try:
-                response = client.interactions.create(
-                    model="gemini-3.8-flash",
-                    input=[
-                        {"type": "text", "text": instruccion},
-                        {"type": "video", "uri": video_url, "mime_type": "video/*"}
-                    ]
-                )
-                if hasattr(response, 'output_text') and response.output_text:
-                    return response.output_text
-            except Exception:
-                pass
+            if not suffix:
+                suffix = ".mp4"
 
-            res = client.models.generate_content(
+            with tempfile.NamedTemporaryFile(
+                suffix=suffix,
+                delete=False,
+            ) as temp:
+                local_path = temp.name
+
+            # Descargar archivo temporal de OpenAI
+            download_openai_file(
+                download_url,
+                local_path,
+            )
+
+            # Subir archivo a Gemini
+            gemini_file = client.files.upload(
+                file=local_path
+            )
+
+            # Esperar hasta que Gemini termine de procesarlo
+            gemini_file = wait_until_active(
+                gemini_file
+            )
+
+            # Analizar video + audio
+            response = client.models.generate_content(
                 model="gemini-3.8-flash",
                 contents=[
-                    types.Part.from_uri(file_uri=video_url, mime_type="video/*"),
-                    instruccion
-                ]
+                    gemini_file,
+                    instruccion,
+                ],
             )
-            return res.text
 
-        return "No se detectó ningún archivo de video adjunto ni enlace para analizar."
+            return response.text or (
+                "Gemini procesó el video pero "
+                "no devolvió texto."
+            )
 
-    except Exception as e:
-        return f"Error procesando video con Gemini: {str(e)}"
+
+        # =================================================
+        # CASO 2 — URL DE YOUTUBE
+        # =================================================
+
+        if url:
+
+            video_url = url.strip()
+
+            # Normalizar enlaces cortos
+            if "youtu.be/" in video_url:
+
+                video_id = (
+                    video_url
+                    .split("youtu.be/", 1)[1]
+                    .split("?", 1)[0]
+                )
+
+                video_url = (
+                    "https://www.youtube.com/watch?v="
+                    + video_id
+                )
+
+            elif "youtube.com/live/" in video_url:
+
+                video_id = (
+                    video_url
+                    .split("youtube.com/live/", 1)[1]
+                    .split("?", 1)[0]
+                )
+
+                video_url = (
+                    "https://www.youtube.com/watch?v="
+                    + video_id
+                )
+
+            interaction = client.interactions.create(
+                model="gemini-3.8-flash",
+                input=[
+                    {
+                        "type": "text",
+                        "text": instruccion,
+                    },
+                    {
+                        "type": "video",
+                        "uri": video_url,
+                    },
+                ],
+            )
+
+            return (
+                interaction.output_text
+                or "Gemini no devolvió texto."
+            )
+
+
+        return (
+            "No se detectó un video adjunto "
+            "ni una URL de YouTube."
+        )
+
+
+    except Exception as error:
+
+        return (
+            "Error procesando video con Gemini: "
+            f"{type(error).__name__}: {error}"
+        )
+
+
     finally:
-        # Limpiar archivo temporal local
-        if target_file_path and os.path.exists(target_file_path):
+
+        # Borrar copia temporal del servidor
+        if local_path and os.path.exists(local_path):
+
             try:
-                os.remove(target_file_path)
+                os.remove(local_path)
+
             except Exception:
                 pass
-        # Limpiar archivo en los servidores de Gemini
-        if gemini_file and hasattr(gemini_file, 'name'):
+
+
+        # Borrar copia subida a Gemini
+        if (
+            gemini_file
+            and getattr(gemini_file, "name", None)
+        ):
+
             try:
-                client.files.delete(name=gemini_file.name)
+                client.files.delete(
+                    name=gemini_file.name
+                )
+
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------
+# SERVER
+# ---------------------------------------------------------
 
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    mcp.run(
+        transport="sse"
+    )

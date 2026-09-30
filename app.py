@@ -2,12 +2,15 @@ import os
 import time
 import tempfile
 import urllib.request
+import logging
+import re
+from urllib.parse import parse_qs, urlsplit
 
-from typing import TypedDict
-from typing_extensions import Required, NotRequired
+from typing_extensions import TypedDict, Required, NotRequired
 
 from mcp.server.fastmcp import FastMCP
 from google import genai
+from google.genai import types
 
 
 # ---------------------------------------------------------
@@ -15,6 +18,8 @@ from google import genai
 # ---------------------------------------------------------
 
 PORT = int(os.environ.get("PORT", 8000))
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
     "Gemini Video Analyzer",
@@ -23,7 +28,18 @@ mcp = FastMCP(
 )
 
 client = genai.Client(
-    api_key=os.environ.get("GEMINI_API_KEY")
+    api_key=os.environ.get("GEMINI_API_KEY"),
+    http_options=types.HttpOptions(
+        timeout=120_000,
+        retry_options=types.HttpRetryOptions(
+            attempts=4,
+            initial_delay=2.0,
+            max_delay=15.0,
+            exp_base=2.0,
+            jitter=1.0,
+            http_status_codes=[408, 429, 500, 502, 503, 504],
+        ),
+    ),
 )
 
 
@@ -36,6 +52,31 @@ class OpenAIFile(TypedDict):
     file_id: Required[str]
     mime_type: NotRequired[str]
     file_name: NotRequired[str]
+
+
+def normalize_youtube_url(url: str) -> str:
+    """Validar el dominio real y normalizar watch, live, shorts y youtu.be."""
+    parsed = urlsplit(url.strip())
+    if parsed.scheme not in {"https", "http"} or parsed.username or parsed.password:
+        raise ValueError("Introduce una URL pública válida de YouTube.")
+
+    host = (parsed.hostname or "").lower()
+    segments = parsed.path.strip("/").split("/")
+    if host == "youtu.be":
+        video_id = segments[0]
+    elif host in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+        if parsed.path == "/watch":
+            video_id = parse_qs(parsed.query).get("v", [""])[0]
+        elif len(segments) == 2 and segments[0] in {"live", "shorts", "embed"}:
+            video_id = segments[1]
+        else:
+            raise ValueError("La URL debe apuntar a un video de YouTube.")
+    else:
+        raise ValueError("Este campo admite enlaces de YouTube; adjunta otros videos como archivo.")
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+        raise ValueError("El enlace de YouTube no contiene un ID de video válido.")
+    return "https://www.youtube.com/watch?v=" + video_id
 
 
 # ---------------------------------------------------------
@@ -87,13 +128,9 @@ def wait_until_active(
     gemini_file,
     timeout_seconds: int = 600,
 ):
-    start = time.time()
+    deadline = time.monotonic() + timeout_seconds
 
     while True:
-
-        gemini_file = client.files.get(
-            name=gemini_file.name
-        )
 
         state = getattr(
             getattr(gemini_file, "state", None),
@@ -114,12 +151,16 @@ def wait_until_active(
                 f"Estado: {state}"
             )
 
-        if time.time() - start > timeout_seconds:
+        if state != "PROCESSING":
+            raise RuntimeError(f"Estado de archivo inesperado en Gemini: {state}")
+
+        if time.monotonic() >= deadline:
             raise TimeoutError(
                 "Gemini tardó demasiado procesando el video."
             )
 
-        time.sleep(3)
+        time.sleep(min(3, max(0, deadline - time.monotonic())))
+        gemini_file = client.files.get(name=gemini_file.name)
 
 
 # ---------------------------------------------------------
@@ -147,8 +188,12 @@ def analizar_video(
 
     local_path = None
     gemini_file = None
+    stage = "validación de entrada"
 
     try:
+
+        if video is not None and url:
+            raise ValueError("Envía un archivo adjunto o un enlace, uno por solicitud.")
 
         # =================================================
         # CASO 1 — MP4 ADJUNTO EN CHATGPT
@@ -175,34 +220,40 @@ def analizar_video(
                 local_path = temp.name
 
             # Descargar archivo temporal de OpenAI
+            stage = "descarga del archivo adjunto"
             download_openai_file(
                 download_url,
                 local_path,
             )
 
             # Subir archivo a Gemini
+            stage = "subida del archivo a Gemini"
             gemini_file = client.files.upload(
-                file=local_path
+                file=local_path,
+                config=types.UploadFileConfig(
+                    mime_type=video.get("mime_type") or "video/mp4"
+                ),
             )
 
             # Esperar hasta que Gemini termine de procesarlo
+            stage = "procesamiento del archivo en Gemini"
             gemini_file = wait_until_active(
                 gemini_file
             )
 
             # Analizar video + audio
+            stage = "análisis del video en Gemini"
             response = client.models.generate_content(
-                model="gemini-3.8-flash",
+                model=MODEL,
                 contents=[
                     gemini_file,
                     instruccion,
                 ],
             )
 
-            return response.text or (
-                "Gemini procesó el video pero "
-                "no devolvió texto."
-            )
+            if not response.text:
+                raise RuntimeError("Gemini no devolvió texto de análisis.")
+            return response.text
 
 
         # =================================================
@@ -211,37 +262,11 @@ def analizar_video(
 
         if url:
 
-            video_url = url.strip()
+            video_url = normalize_youtube_url(url)
 
-            # Normalizar enlaces cortos
-            if "youtu.be/" in video_url:
-
-                video_id = (
-                    video_url
-                    .split("youtu.be/", 1)[1]
-                    .split("?", 1)[0]
-                )
-
-                video_url = (
-                    "https://www.youtube.com/watch?v="
-                    + video_id
-                )
-
-            elif "youtube.com/live/" in video_url:
-
-                video_id = (
-                    video_url
-                    .split("youtube.com/live/", 1)[1]
-                    .split("?", 1)[0]
-                )
-
-                video_url = (
-                    "https://www.youtube.com/watch?v="
-                    + video_id
-                )
-
+            stage = "análisis del enlace de YouTube en Gemini"
             interaction = client.interactions.create(
-                model="gemini-3.8-flash",
+                model=MODEL,
                 input=[
                     {
                         "type": "text",
@@ -254,24 +279,30 @@ def analizar_video(
                 ],
             )
 
-            return (
-                interaction.output_text
-                or "Gemini no devolvió texto."
-            )
+            if not interaction.output_text:
+                raise RuntimeError("Gemini no devolvió texto de análisis.")
+            return interaction.output_text
 
 
-        return (
+        raise ValueError(
             "No se detectó un video adjunto "
             "ni una URL de YouTube."
         )
 
 
+    except (ValueError, TimeoutError):
+        raise
     except Exception as error:
-
-        return (
-            "Error procesando video con Gemini: "
-            f"{type(error).__name__}: {error}"
-        )
+        code = getattr(error, "code", None)
+        logger.warning("Fallo en %s: %s, código=%s", stage, type(error).__name__, code)
+        if code == 503:
+            message = "Gemini sigue temporalmente no disponible tras los reintentos. Prueba más tarde."
+        elif code == 429:
+            message = "Gemini devolvió 429 tras los reintentos. Revisa la cuota y los límites de tu cuenta."
+        else:
+            message = f"Fallo en {stage} ({type(error).__name__}, código={code})."
+        # Una excepción produce isError=true en MCP, en lugar de un éxito falso.
+        raise RuntimeError(message) from None
 
 
     finally:
@@ -282,8 +313,8 @@ def analizar_video(
             try:
                 os.remove(local_path)
 
-            except Exception:
-                pass
+            except Exception as error:
+                logger.warning("No se pudo borrar el temporal local: %s", type(error).__name__)
 
 
         # Borrar copia subida a Gemini
@@ -297,8 +328,8 @@ def analizar_video(
                     name=gemini_file.name
                 )
 
-            except Exception:
-                pass
+            except Exception as error:
+                logger.warning("No se pudo borrar la copia en Gemini: %s", type(error).__name__)
 
 
 # ---------------------------------------------------------

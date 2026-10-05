@@ -2,8 +2,7 @@ import os
 import tempfile
 import time
 import urllib.request
-from typing import TypedDict
-from typing_extensions import Required, NotRequired
+from typing_extensions import TypedDict, Required, NotRequired
 from urllib.parse import urlparse, parse_qs
 
 from google import genai

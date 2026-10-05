@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "yaco-transcriptor": {
+      "type": "streamable-http",
+      "url": "https://gemini-video-mcp-4ev0.onrender.com/mcp",
+      "headers": {}
+    }
+  }
+}

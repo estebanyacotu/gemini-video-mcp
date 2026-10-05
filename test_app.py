@@ -14,7 +14,7 @@ import app
 
 
 def file_with_state(state):
-    return SimpleNamespace(name="files/test", state=SimpleNamespace(name=state))
+    return SimpleNamespace(name="files/test", uri="https://generativelanguage.googleapis.com/files/test", mime_type="video/mp4", state=SimpleNamespace(name=state))
 
 
 class VideoTests(unittest.TestCase):
@@ -66,7 +66,7 @@ class VideoTests(unittest.TestCase):
     def test_attachment_success_and_cleanup(self):
         sdk = Mock()
         sdk.files.upload.return_value = file_with_state("ACTIVE")
-        sdk.models.generate_content.return_value = SimpleNamespace(text="Análisis de prueba")
+        sdk.interactions.create.return_value = SimpleNamespace(output_text="Análisis de prueba")
         with patch.object(app, "client", sdk), patch.object(app, "download_openai_file"):
             result = app.analizar_video(video={
                 "download_url": "https://example.com/authorized.mp4",
@@ -79,7 +79,7 @@ class VideoTests(unittest.TestCase):
     def test_503_is_error_and_cleans_up(self):
         sdk = Mock()
         sdk.files.upload.return_value = file_with_state("ACTIVE")
-        sdk.models.generate_content.side_effect = errors.ServerError(
+        sdk.interactions.create.side_effect = errors.ServerError(
             503, {"error": {"message": "high demand", "status": "UNAVAILABLE"}}
         )
         with patch.object(app, "client", sdk), patch.object(app, "download_openai_file"):
@@ -127,7 +127,7 @@ class VideoTests(unittest.TestCase):
             result = app.analizar_video(url="https://youtu.be/YBPHvu1PVAc")
         self.assertEqual(result, "Análisis de YouTube")
         inputs = sdk.interactions.create.call_args.kwargs["input"]
-        self.assertEqual(inputs[1]["uri"], "https://www.youtube.com/watch?v=YBPHvu1PVAc")
+        self.assertEqual(inputs[0]["uri"], "https://www.youtube.com/watch?v=YBPHvu1PVAc")
 
     def test_missing_or_ambiguous_input(self):
         with self.assertRaises(ValueError):

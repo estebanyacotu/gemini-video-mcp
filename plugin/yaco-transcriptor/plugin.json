@@ -1,0 +1,28 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "yaco-transcriptor",
+  "version": "0.3.1",
+  "description": "Conversa sobre videos de plataformas compatibles y analiza adjuntos con audio e imagen; prepara cortes y empaque cuando lo pidas.",
+  "author": {
+    "name": "Yaco"
+  },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Yaco Transcriptor",
+        "shortDescription": "Conversa y analiza videos",
+        "longDescription": "Pega un enlace compatible para conversar sobre su contenido. Adjunta un video para análisis audiovisual. Pide clips para obtener cortes y empaque. Transcripción multiplataforma; análisis audiovisual por URL de YouTube o archivo adjunto. Requiere desplegar el servidor propio.",
+        "developerName": "Yaco",
+        "category": "Productivity",
+        "capabilities": [
+          "Interactive"
+        ],
+        "defaultPrompt": [
+          "Transcribe this video and preserve the important wording.",
+          "Get the metadata, chapters, and available subtitle tracks for this video.",
+          "Search YouTube for this topic and transcribe the most relevant result."
+        ]
+      }
+    }
+  }
+}

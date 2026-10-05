@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "yaco-transcriptor": {
+      "type": "streamable-http",
+      "url": "https://gemini-video-mcp-4ev0.onrender.com/mcp"
+    }
+  }
+}

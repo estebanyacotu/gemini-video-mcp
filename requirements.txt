@@ -3,5 +3,6 @@ uvicorn>=0.28.0
 mcp>=1.20.0,<2.0.0
 google-genai>=0.1.0
 pydantic>=2.0.0
-yt-dlp>=2026.1.1
+yt-dlp[default,curl-cffi]>=2026.8.19
 imageio-ffmpeg>=0.6.0
+deno>=2.9.7

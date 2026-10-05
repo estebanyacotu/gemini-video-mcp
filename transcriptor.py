@@ -32,8 +32,9 @@ YT_DLP_JS_RUNTIMES = os.environ.get("YT_DLP_JS_RUNTIMES", "deno").strip()
 YT_DLP_REMOTE_COMPONENTS = os.environ.get("YT_DLP_REMOTE_COMPONENTS", "ejs:github").strip()
 YT_DLP_EXTRACTOR_ARGS = os.environ.get(
     "YT_DLP_EXTRACTOR_ARGS",
-    "youtube:player_client=mweb",
+    "youtube:player_client=mweb;fetch_pot=always",
 ).strip()
+YT_DLP_DIAGNOSTICS = os.environ.get("YT_DLP_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes"}
 BGUTIL_ENABLED = os.environ.get("BGUTIL_POT_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 BGUTIL_VERSION = os.environ.get("BGUTIL_POT_VERSION", "2.0.1").strip()
 BGUTIL_BOOTSTRAP_TIMEOUT = max(30, int(os.environ.get("BGUTIL_BOOTSTRAP_TIMEOUT", "180")))
@@ -270,6 +271,9 @@ def _run(args: list[str], timeout: int | None = None, binary: bool = False):
                 raise last_error from exc
 
             if result.returncode == 0:
+                if YT_DLP_DIAGNOSTICS and result.stderr:
+                    diagnostic = result.stderr.decode("utf-8", "replace") if binary else result.stderr
+                    print(diagnostic[-12000:], file=sys.stderr, flush=True)
                 return result.stdout
 
             stderr = result.stderr.decode("utf-8", "replace") if binary else result.stderr
@@ -302,6 +306,8 @@ def _run(args: list[str], timeout: int | None = None, binary: bool = False):
 
 def _ytdlp(*args: str, timeout: int | None = None, binary: bool = False):
     common = ["--no-progress", "-R", "3", "--retry-sleep", "linear=1::2"]
+    if YT_DLP_DIAGNOSTICS:
+        common.append("-v")
     if YT_DLP_JS_RUNTIMES:
         common.extend(["--js-runtimes", YT_DLP_JS_RUNTIMES])
     if YT_DLP_REMOTE_COMPONENTS:

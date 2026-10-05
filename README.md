@@ -33,7 +33,20 @@ Recommended environment values:
 - `YT_DLP_MAX_QUEUE=6`
 - `YT_DLP_TIMEOUT=60`
 
-## 0.3.0 candidate: lives → cuts and mobile clip review
+## Plugin 0.3.1 candidate / server 0.3.0: conversation first
+
+A bare video URL starts a conversation about its content. Answer the user's question or offer a brief content-grounded explanation. Only an explicit clipping request activates candidate selection, ranking and packaging. Uploaded videos receive general audiovisual analysis; final clips receive editorial review when requested or established by the active task.
+
+Transcription/metadata/frame tools accept the 11 platform families documented by [Transcriptor](https://github.com/samson-art/transcriptor-mcp): YouTube, X/Twitter, Instagram, TikTok, Twitch, Vimeo, Facebook, Bilibili, VK, Dailymotion and Reddit. Acceptance is not evidence that every link works. Audiovisual URL analysis and the block-based clipping workflow currently require YouTube; other platforms can use an attached video for audiovisual analysis. Search is YouTube-only.
+
+Routing examples:
+- A bare YouTube link or "what does this Instagram reel say?" → grounded conversation, no clipping package.
+- An attached lecture → general audiovisual analysis, no assumed production task.
+- "Vamos a hacer los clips" → exhaustive candidate pass and editing package.
+- "Evalúa este corte final" with an attachment → timestamped editorial review.
+- A new unrelated video after a clipping task → honor the new request; do not automatically carry clipping intent forward.
+
+### Live cuts and mobile clip review
 
 New tools:
 - `preparar_live(url)`: verified duration and complete 8-minute windows, with 20-second overlap.

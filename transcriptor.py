@@ -9,8 +9,6 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -38,6 +36,10 @@ READ_ONLY_ANNOTATIONS = {
     "destructiveHint": False,
     "idempotentHint": True,
     "openWorldHint": True,
+}
+SEARCH_ANNOTATIONS = {
+    **READ_ONLY_ANNOTATIONS,
+    "idempotentHint": False,
 }
 
 _ALLOWED_HOSTS = (
@@ -275,38 +277,54 @@ def _choose_track(info: dict, track_type: str | None, lang: str | None, fmt: str
     return chosen_type or "auto", chosen_lang or "und", preferred
 
 
-def _fetch_text(url: str, headers: dict | None = None) -> str:
+def _download_subtitle(
+    url: str,
+    track_type: str,
+    lang: str,
+    fmt: str,
+) -> str:
     _check_caption_hold()
-    request_headers = {
-        "User-Agent": "Mozilla/5.0 YacoTranscriptor/0.4",
-        **(headers or {}),
-    }
-    last_error = None
-    for attempt in range(3):
-        req = urllib.request.Request(url, headers=request_headers)
+    normalized = _normalize_url(url)
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    with tempfile.TemporaryDirectory(prefix="yaco-subs-") as temp_dir:
+        output = str(Path(temp_dir) / "subtitle.%(ext)s")
+        args = [
+            "--no-playlist",
+            "--skip-download",
+            "--write-subs" if track_type == "official" else "--write-auto-subs",
+            "--sub-langs", lang,
+            "--sub-format", "best",
+            "--convert-subs", fmt,
+            "--ffmpeg-location", ffmpeg,
+            "--output", output,
+            normalized,
+        ]
         try:
-            with urllib.request.urlopen(req, timeout=YT_DLP_TIMEOUT) as resp:
-                body = resp.read().decode("utf-8", "replace")
-            _clear_caption_hold()
-            return body
-        except urllib.error.HTTPError as exc:
-            last_error = exc
-            if exc.code == 429:
+            _ytdlp(*args, timeout=max(YT_DLP_TIMEOUT, 120))
+        except Exception as exc:
+            message = str(exc).lower()
+            if "429" in message or "too many requests" in message:
                 _mark_caption_rate_limited()
                 raise RuntimeError(
                     "rate_limited: subtitle provider returned HTTP 429; retry later"
                 ) from exc
-            if 500 <= exc.code < 600 and attempt < 2:
-                time.sleep(1 + attempt * 2)
-                continue
-            raise RuntimeError(f"subtitle download failed: HTTP {exc.code}") from exc
-        except urllib.error.URLError as exc:
-            last_error = exc
-            if attempt < 2:
-                time.sleep(1 + attempt * 2)
-                continue
-            raise RuntimeError(f"subtitle download failed: {exc.reason}") from exc
-    raise RuntimeError(f"subtitle download failed: {last_error}")
+            raise
+
+        candidates = sorted(
+            p for p in Path(temp_dir).iterdir()
+            if p.is_file() and p.suffix.lower().lstrip(".") == fmt
+        )
+        if not candidates:
+            candidates = sorted(p for p in Path(temp_dir).iterdir() if p.is_file())
+        if not candidates:
+            raise RuntimeError(
+                f"subtitle download produced no file for type={track_type} lang={lang}"
+            )
+        body = candidates[0].read_text(encoding="utf-8", errors="replace")
+        if not body.strip():
+            raise RuntimeError("subtitle download returned empty content")
+        _clear_caption_hold()
+        return body
 
 
 def _clean_subtitles(raw: str) -> str:
@@ -327,38 +345,35 @@ def _clean_subtitles(raw: str) -> str:
     return "\n".join(lines)
 
 
-def _cursor_hash(parts: dict) -> str:
-    payload = json.dumps(parts, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(payload).hexdigest()[:16]
-
-
-def _encode_cursor(offset: int, parts: dict) -> str:
-    raw = json.dumps({"o": offset, "h": _cursor_hash(parts)}).encode()
-    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
-
-
-def _decode_cursor(cursor: str | None, parts: dict) -> int:
+def _decode_cursor(cursor: str | None) -> int:
     if not cursor:
         return 0
     try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        data = json.loads(base64.urlsafe_b64decode(padded.encode()))
-        if data["h"] != _cursor_hash(parts) or int(data["o"]) < 0:
-            raise ValueError
-        return int(data["o"])
-    except Exception as exc:
-        raise ValueError("Invalid or mismatched next_cursor") from exc
+        value = int(cursor)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid next_cursor") from exc
+    if value < 0:
+        raise ValueError("Invalid next_cursor")
+    return value
 
 
-def _page(text: str, response_limit: int | None, next_cursor: str | None, parts: dict):
-    start = _decode_cursor(next_cursor, parts)
+def _page(
+    text: str,
+    response_limit: int | None,
+    next_cursor: str | None,
+    _parts: dict | None = None,
+):
+    start = _decode_cursor(next_cursor)
     if start > len(text):
         raise ValueError("next_cursor is beyond content length")
-    limit = 50000 if response_limit is None else int(response_limit)
-    if limit < 1000 or limit > 200000:
-        raise ValueError("response_limit must be between 1000 and 200000")
+    if response_limit is None:
+        limit = len(text) - start
+    else:
+        limit = int(response_limit)
+        if limit < 1000:
+            raise ValueError("response_limit must be at least 1000")
     end = min(len(text), start + limit)
-    cursor = _encode_cursor(end, parts) if end < len(text) else None
+    cursor = str(end) if end < len(text) else None
     return text[start:end], start, end, cursor
 
 
@@ -377,7 +392,7 @@ def _subtitle_payload(
         raise ValueError("type must be official or auto")
     normalized = _normalize_url(url)
     info = _info(normalized)
-    chosen_type, chosen_lang, track = _choose_track(info, type, lang, format)
+    chosen_type, chosen_lang, _track = _choose_track(info, type, lang, format)
     cache_key = json.dumps(
         {
             "url": normalized,
@@ -391,7 +406,7 @@ def _subtitle_payload(
     )
     text = _cache_get(_transcript_cache, cache_key, TRANSCRIPT_CACHE_TTL)
     if text is None:
-        body = _fetch_text(track["url"], info.get("http_headers"))
+        body = _download_subtitle(normalized, chosen_type, chosen_lang, format)
         text = body if raw else _clean_subtitles(body)
         _cache_put(_transcript_cache, cache_key, text, 4)
     parts = {
@@ -587,7 +602,7 @@ def register_transcriptor_tools(mcp):
                 })
         return {"results": results}
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+    @mcp.tool(annotations=SEARCH_ANNOTATIONS)
     def search_videos(
         query: str,
         limit: int = 10,

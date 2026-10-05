@@ -20,20 +20,21 @@ class TranscriptorContractTests(unittest.TestCase):
             transcriptor._normalize_url("https://example.com/video")
 
     def test_cursor_roundtrip(self):
-        parts = {"url": "https://youtu.be/dQw4w9WgXcQ", "lang": "en"}
-        cursor = transcriptor._encode_cursor(1234, parts)
-        self.assertEqual(transcriptor._decode_cursor(cursor, parts), 1234)
+        self.assertEqual(transcriptor._decode_cursor("1234"), 1234)
+        with self.assertRaises(ValueError):
+            transcriptor._decode_cursor("not-a-cursor")
 
     def test_pagination_defaults_and_bounds(self):
-        parts = {"url": "https://youtu.be/dQw4w9WgXcQ", "lang": "en"}
         text = "x" * 60000
-        chunk, start, end, cursor = transcriptor._page(text, None, None, parts)
-        self.assertEqual((len(chunk), start, end), (50000, 0, 50000))
-        self.assertIsNotNone(cursor)
+        chunk, start, end, cursor = transcriptor._page(text, None, None)
+        self.assertEqual((len(chunk), start, end), (60000, 0, 60000))
+        self.assertIsNone(cursor)
+
+        chunk, start, end, cursor = transcriptor._page(text, 5000, None)
+        self.assertEqual((len(chunk), start, end, cursor), (5000, 0, 5000, "5000"))
+
         with self.assertRaises(ValueError):
-            transcriptor._page(text, 999, None, parts)
-        with self.assertRaises(ValueError):
-            transcriptor._page(text, 200001, None, parts)
+            transcriptor._page(text, 999, None)
 
     def test_tool_contract_and_annotations(self):
         tools = asyncio.run(app.mcp.list_tools())
@@ -56,6 +57,10 @@ class TranscriptorContractTests(unittest.TestCase):
             self.assertTrue(dumped.get("readOnlyHint"))
             self.assertFalse(dumped.get("destructiveHint"))
             self.assertTrue(dumped.get("openWorldHint"))
+            if name == "search_videos":
+                self.assertFalse(dumped.get("idempotentHint"))
+            else:
+                self.assertTrue(dumped.get("idempotentHint"))
 
 
 if __name__ == "__main__":

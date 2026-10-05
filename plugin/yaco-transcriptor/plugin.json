@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "yaco-transcriptor",
-  "version": "0.3.0",
-  "description": "Convierte lives de YouTube en cortes con evidencia y empaque para TikTok; evalúa clips adjuntos con audio e imagen.",
+  "version": "0.3.1",
+  "description": "Conversa sobre videos de plataformas compatibles y analiza adjuntos con audio e imagen; prepara cortes y empaque cuando lo pidas.",
   "author": {
     "name": "Yaco"
   },
@@ -10,8 +10,8 @@
     "com.openai": {
       "interface": {
         "displayName": "Yaco Transcriptor",
-        "shortDescription": "Lives a cortes para TikTok",
-        "longDescription": "Pega un enlace de YouTube para obtener cortes priorizados con tiempos, evidencia y empaque. Adjunta el clip final para revisar audio, imagen, subtítulos y edición. Requiere servidor Yaco 0.3.0.",
+        "shortDescription": "Conversa y analiza videos",
+        "longDescription": "Pega un enlace compatible para conversar sobre su contenido. Adjunta un video para análisis audiovisual. Pide clips para obtener cortes y empaque. Transcripción multiplataforma; análisis audiovisual por URL de YouTube o archivo adjunto. Requiere desplegar el servidor propio.",
         "developerName": "Yaco",
         "category": "Productivity",
         "capabilities": [

@@ -24,9 +24,20 @@ class TranscriptorContractTests(unittest.TestCase):
         cursor = transcriptor._encode_cursor(1234, parts)
         self.assertEqual(transcriptor._decode_cursor(cursor, parts), 1234)
 
-    def test_tool_contract(self):
+    def test_pagination_defaults_and_bounds(self):
+        parts = {"url": "https://youtu.be/dQw4w9WgXcQ", "lang": "en"}
+        text = "x" * 60000
+        chunk, start, end, cursor = transcriptor._page(text, None, None, parts)
+        self.assertEqual((len(chunk), start, end), (50000, 0, 50000))
+        self.assertIsNotNone(cursor)
+        with self.assertRaises(ValueError):
+            transcriptor._page(text, 999, None, parts)
+        with self.assertRaises(ValueError):
+            transcriptor._page(text, 200001, None, parts)
+
+    def test_tool_contract_and_annotations(self):
         tools = asyncio.run(app.mcp.list_tools())
-        names = {tool.name for tool in tools}
+        by_name = {tool.name: tool for tool in tools}
         expected = {
             "analizar_video",
             "get_transcript",
@@ -38,7 +49,13 @@ class TranscriptorContractTests(unittest.TestCase):
             "get_playlist_transcripts",
             "search_videos",
         }
-        self.assertTrue(expected.issubset(names))
+        self.assertTrue(expected.issubset(by_name))
+        for name in expected - {"analizar_video"}:
+            annotations = by_name[name].annotations
+            dumped = annotations.model_dump(by_alias=True) if hasattr(annotations, "model_dump") else dict(annotations)
+            self.assertTrue(dumped.get("readOnlyHint"))
+            self.assertFalse(dumped.get("destructiveHint"))
+            self.assertTrue(dumped.get("openWorldHint"))
 
 
 if __name__ == "__main__":

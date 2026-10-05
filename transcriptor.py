@@ -570,7 +570,7 @@ def register_transcriptor_tools(mcp):
                 })
         return {"results": results}
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     def search_videos(
         query: str,
         limit: int = 10,

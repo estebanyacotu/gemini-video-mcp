@@ -26,6 +26,12 @@ METADATA_CACHE_TTL = max(0, int(os.environ.get("YT_DLP_METADATA_CACHE_TTL", "90"
 TRANSCRIPT_CACHE_TTL = max(0, int(os.environ.get("YT_DLP_TRANSCRIPT_CACHE_TTL", "900")))
 SUBTITLE_HOLD_BASE = max(30, int(os.environ.get("SUBTITLES_RATE_LIMIT_HOLD_SECONDS", "600")))
 SUBTITLE_HOLD_MAX = max(SUBTITLE_HOLD_BASE, int(os.environ.get("SUBTITLES_RATE_LIMIT_HOLD_MAX_SECONDS", "3600")))
+YT_DLP_JS_RUNTIMES = os.environ.get("YT_DLP_JS_RUNTIMES", "deno").strip()
+YT_DLP_REMOTE_COMPONENTS = os.environ.get("YT_DLP_REMOTE_COMPONENTS", "ejs:github").strip()
+YT_DLP_EXTRACTOR_ARGS = os.environ.get(
+    "YT_DLP_EXTRACTOR_ARGS",
+    "youtube:player_client=default,web_embedded",
+).strip()
 
 READ_ONLY_ANNOTATIONS = {
     "readOnlyHint": True,
@@ -186,7 +192,18 @@ def _run(args: list[str], timeout: int | None = None, binary: bool = False):
 
 
 def _ytdlp(*args: str, timeout: int | None = None, binary: bool = False):
-    return _run([sys.executable, "-m", "yt_dlp", *args], timeout=timeout, binary=binary)
+    common = ["--no-progress", "-R", "3", "--retry-sleep", "linear=1::2"]
+    if YT_DLP_JS_RUNTIMES:
+        common.extend(["--js-runtimes", YT_DLP_JS_RUNTIMES])
+    if YT_DLP_REMOTE_COMPONENTS:
+        common.extend(["--remote-components", YT_DLP_REMOTE_COMPONENTS])
+    if YT_DLP_EXTRACTOR_ARGS:
+        common.extend(["--extractor-args", YT_DLP_EXTRACTOR_ARGS])
+    return _run(
+        [sys.executable, "-m", "yt_dlp", *common, *args],
+        timeout=timeout,
+        binary=binary,
+    )
 
 
 def _info(url: str) -> dict:
@@ -195,7 +212,7 @@ def _info(url: str) -> dict:
     if cached is not None:
         return cached
     out = _ytdlp(
-        "--no-playlist", "--skip-download", "--no-progress",
+        "--no-playlist", "--skip-download",
         "--ignore-no-formats-error", "-J", normalized
     )
     info = json.loads(out)

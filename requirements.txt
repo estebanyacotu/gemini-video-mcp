@@ -6,3 +6,4 @@ pydantic>=2.0.0
 yt-dlp[default,curl-cffi]>=2026.8.19
 imageio-ffmpeg>=0.6.0
 deno>=2.9.7
+bgutil-ytdlp-pot-provider==2.0.1

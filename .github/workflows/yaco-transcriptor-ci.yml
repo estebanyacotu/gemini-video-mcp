@@ -1,34 +1,36 @@
-name: Yaco Transcriptor CI
-
+name: Yaco clipping contracts
 on:
   push:
-    branches:
-      - yaco-transcriptor-mobile
+    branches: [yaco-transcriptor-mobile, yaco-clipping-multimodal]
   pull_request:
-    branches:
-      - main
-
+    branches: [main]
+  workflow_dispatch:
 jobs:
-  contract-and-render-e2e:
+  contracts:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.12'
           cache: pip
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Unit and MCP contract tests
+      - run: pip install -r requirements.txt
+      - name: Unit and MCP contracts (mocked providers, no paid API calls)
         env:
           GEMINI_API_KEY: test-key-not-a-real-credential
-        run: python -m unittest -v test_transcriptor.py
-
-      - name: Render staging end-to-end
+        run: python -m unittest -v test_app test_transcriptor test_clipping
+  deployed-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Explicit staging smoke test
         env:
-          MCP_URL: "https://gemini-video-mcp-yaco-staging.onrender.com/mcp"
+          MCP_URL: https://gemini-video-mcp-yaco-staging.onrender.com/mcp
         run: python test_live_mcp.py

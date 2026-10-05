@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
@@ -20,6 +22,17 @@ MAX_CONCURRENCY = max(1, int(os.environ.get("YT_DLP_MAX_CONCURRENCY", "3")))
 MAX_QUEUE = max(0, int(os.environ.get("YT_DLP_MAX_QUEUE", "6")))
 MAX_PLAYLIST_ITEMS = max(1, int(os.environ.get("YT_DLP_MAX_PLAYLIST_ITEMS", "25")))
 MAX_SEARCH_RESULTS = max(1, int(os.environ.get("YT_DLP_MAX_SEARCH_RESULTS", "50")))
+METADATA_CACHE_TTL = max(0, int(os.environ.get("YT_DLP_METADATA_CACHE_TTL", "90")))
+TRANSCRIPT_CACHE_TTL = max(0, int(os.environ.get("YT_DLP_TRANSCRIPT_CACHE_TTL", "900")))
+SUBTITLE_HOLD_BASE = max(30, int(os.environ.get("SUBTITLES_RATE_LIMIT_HOLD_SECONDS", "600")))
+SUBTITLE_HOLD_MAX = max(SUBTITLE_HOLD_BASE, int(os.environ.get("SUBTITLES_RATE_LIMIT_HOLD_MAX_SECONDS", "3600")))
+
+READ_ONLY_ANNOTATIONS = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
 
 _ALLOWED_HOSTS = (
     "youtube.com", "youtu.be", "twitter.com", "x.com", "instagram.com",
@@ -30,6 +43,63 @@ _ALLOWED_HOSTS = (
 _pool = threading.BoundedSemaphore(MAX_CONCURRENCY)
 _queue_lock = threading.Lock()
 _waiting = 0
+
+_cache_lock = threading.Lock()
+_info_cache: dict[str, tuple[float, dict]] = {}
+_transcript_cache: dict[str, tuple[float, str]] = {}
+
+_caption_lock = threading.Lock()
+_caption_hold_until = 0.0
+_caption_next_hold = SUBTITLE_HOLD_BASE
+
+
+def _cache_get(cache: dict, key: str, ttl: int):
+    if ttl <= 0:
+        return None
+    now = time.monotonic()
+    with _cache_lock:
+        item = cache.get(key)
+        if not item:
+            return None
+        created, value = item
+        if now - created > ttl:
+            cache.pop(key, None)
+            return None
+        return value
+
+
+def _cache_put(cache: dict, key: str, value, max_items: int):
+    if max_items <= 0:
+        return
+    with _cache_lock:
+        cache[key] = (time.monotonic(), value)
+        while len(cache) > max_items:
+            oldest = min(cache.items(), key=lambda kv: kv[1][0])[0]
+            cache.pop(oldest, None)
+
+
+def _check_caption_hold():
+    with _caption_lock:
+        remaining = _caption_hold_until - time.monotonic()
+    if remaining > 0:
+        raise RuntimeError(
+            f"rate_limited: subtitle provider is temporarily paused; retry in {int(remaining) + 1}s"
+        )
+
+
+def _mark_caption_rate_limited():
+    global _caption_hold_until, _caption_next_hold
+    with _caption_lock:
+        hold = _caption_next_hold
+        _caption_hold_until = max(_caption_hold_until, time.monotonic() + hold)
+        _caption_next_hold = min(SUBTITLE_HOLD_MAX, max(SUBTITLE_HOLD_BASE, hold * 2))
+
+
+def _clear_caption_hold():
+    global _caption_hold_until, _caption_next_hold
+    with _caption_lock:
+        _caption_hold_until = 0.0
+        _caption_next_hold = SUBTITLE_HOLD_BASE
 
 
 def _normalize_url(raw: str) -> str:
@@ -62,18 +132,55 @@ def _run(args: list[str], timeout: int | None = None, binary: bool = False):
         finally:
             with _queue_lock:
                 _waiting -= 1
+
     try:
-        result = subprocess.run(
-            args,
-            capture_output=True,
-            text=not binary,
-            timeout=timeout or YT_DLP_TIMEOUT,
-            check=False,
-        )
-        if result.returncode != 0:
+        attempts = 3
+        last_error = None
+        for attempt in range(attempts):
+            try:
+                result = subprocess.run(
+                    args,
+                    capture_output=True,
+                    text=not binary,
+                    timeout=timeout or YT_DLP_TIMEOUT,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                last_error = RuntimeError(
+                    f"command timed out after {timeout or YT_DLP_TIMEOUT}s"
+                )
+                if attempt + 1 < attempts:
+                    time.sleep(1 + attempt * 2)
+                    continue
+                raise last_error from exc
+
+            if result.returncode == 0:
+                return result.stdout
+
             stderr = result.stderr.decode("utf-8", "replace") if binary else result.stderr
-            raise RuntimeError((stderr or f"command failed with {result.returncode}")[-3000:])
-        return result.stdout
+            message = (stderr or f"command failed with {result.returncode}")[-3000:]
+            last_error = RuntimeError(message)
+            transient = any(
+                marker in message.lower()
+                for marker in (
+                    "429",
+                    "too many requests",
+                    "temporarily unavailable",
+                    "http error 500",
+                    "http error 502",
+                    "http error 503",
+                    "http error 504",
+                    "remote end closed connection",
+                    "connection reset",
+                    "timed out",
+                )
+            )
+            if transient and attempt + 1 < attempts:
+                time.sleep(1 + attempt * 2)
+                continue
+            raise last_error
+
+        raise last_error or RuntimeError("command failed")
     finally:
         _pool.release()
 
@@ -83,11 +190,17 @@ def _ytdlp(*args: str, timeout: int | None = None, binary: bool = False):
 
 
 def _info(url: str) -> dict:
+    normalized = _normalize_url(url)
+    cached = _cache_get(_info_cache, normalized, METADATA_CACHE_TTL)
+    if cached is not None:
+        return cached
     out = _ytdlp(
         "--no-playlist", "--skip-download", "--no-progress",
-        "--ignore-no-formats-error", "-J", _normalize_url(url)
+        "--ignore-no-formats-error", "-J", normalized
     )
-    return json.loads(out)
+    info = json.loads(out)
+    _cache_put(_info_cache, normalized, info, 4)
+    return info
 
 
 def _num(value):
@@ -146,12 +259,37 @@ def _choose_track(info: dict, track_type: str | None, lang: str | None, fmt: str
 
 
 def _fetch_text(url: str, headers: dict | None = None) -> str:
-    req = urllib.request.Request(
-        url,
-        headers=headers or {"User-Agent": "Mozilla/5.0 YacoTranscriptor/0.3"},
-    )
-    with urllib.request.urlopen(req, timeout=YT_DLP_TIMEOUT) as resp:
-        return resp.read().decode("utf-8", "replace")
+    _check_caption_hold()
+    request_headers = {
+        "User-Agent": "Mozilla/5.0 YacoTranscriptor/0.4",
+        **(headers or {}),
+    }
+    last_error = None
+    for attempt in range(3):
+        req = urllib.request.Request(url, headers=request_headers)
+        try:
+            with urllib.request.urlopen(req, timeout=YT_DLP_TIMEOUT) as resp:
+                body = resp.read().decode("utf-8", "replace")
+            _clear_caption_hold()
+            return body
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code == 429:
+                _mark_caption_rate_limited()
+                raise RuntimeError(
+                    "rate_limited: subtitle provider returned HTTP 429; retry later"
+                ) from exc
+            if 500 <= exc.code < 600 and attempt < 2:
+                time.sleep(1 + attempt * 2)
+                continue
+            raise RuntimeError(f"subtitle download failed: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(1 + attempt * 2)
+                continue
+            raise RuntimeError(f"subtitle download failed: {exc.reason}") from exc
+    raise RuntimeError(f"subtitle download failed: {last_error}")
 
 
 def _clean_subtitles(raw: str) -> str:
@@ -199,12 +337,10 @@ def _page(text: str, response_limit: int | None, next_cursor: str | None, parts:
     start = _decode_cursor(next_cursor, parts)
     if start > len(text):
         raise ValueError("next_cursor is beyond content length")
-    if response_limit is None:
-        end = len(text)
-    else:
-        if response_limit < 1000:
-            raise ValueError("response_limit must be >= 1000")
-        end = min(len(text), start + response_limit)
+    limit = 50000 if response_limit is None else int(response_limit)
+    if limit < 1000 or limit > 200000:
+        raise ValueError("response_limit must be between 1000 and 200000")
+    end = min(len(text), start + limit)
     cursor = _encode_cursor(end, parts) if end < len(text) else None
     return text[start:end], start, end, cursor
 
@@ -225,8 +361,22 @@ def _subtitle_payload(
     normalized = _normalize_url(url)
     info = _info(normalized)
     chosen_type, chosen_lang, track = _choose_track(info, type, lang, format)
-    body = _fetch_text(track["url"], info.get("http_headers"))
-    text = body if raw else _clean_subtitles(body)
+    cache_key = json.dumps(
+        {
+            "url": normalized,
+            "raw": raw,
+            "type": chosen_type,
+            "lang": chosen_lang,
+            "format": format,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    text = _cache_get(_transcript_cache, cache_key, TRANSCRIPT_CACHE_TTL)
+    if text is None:
+        body = _fetch_text(track["url"], info.get("http_headers"))
+        text = body if raw else _clean_subtitles(body)
+        _cache_put(_transcript_cache, cache_key, text, 4)
     parts = {
         "url": normalized, "raw": raw, "type": chosen_type,
         "lang": chosen_lang, "format": format,
@@ -249,7 +399,7 @@ def _subtitle_payload(
 
 
 def register_transcriptor_tools(mcp):
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     def get_transcript(
         url: str,
         type: str | None = None,
@@ -263,7 +413,7 @@ def register_transcriptor_tools(mcp):
             url, False, type, lang, format, response_limit, next_cursor
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     def get_raw_subtitles(
         url: str,
         type: str | None = None,
@@ -277,17 +427,17 @@ def register_transcriptor_tools(mcp):
             url, True, type, lang, format, response_limit, next_cursor
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     def get_available_subtitles(url: str) -> dict:
         """List official and auto-generated subtitle tracks."""
         info = _info(url)
         return {
             "videoId": str(info.get("id") or ""),
-            "official": list((info.get("subtitles") or {}).keys()),
-            "auto": list((info.get("automatic_captions") or {}).keys()),
+            "official": sorted((info.get("subtitles") or {}).keys()),
+            "auto": sorted((info.get("automatic_captions") or {}).keys()),
         }
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     def get_video_info(url: str) -> dict:
         """Fetch extended video metadata."""
         info = _info(url)
@@ -316,7 +466,7 @@ def register_transcriptor_tools(mcp):
             "thumbnails": info.get("thumbnails") if isinstance(info.get("thumbnails"), list) else None,
         }
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     def get_video_chapters(url: str) -> dict:
         """Fetch chapter markers for a video."""
         info = _info(url)
@@ -329,7 +479,7 @@ def register_transcriptor_tools(mcp):
             })
         return {"videoId": str(info.get("id") or ""), "chapters": chapters}
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     def get_video_frame(
         url: str,
         seconds: float = 0,
@@ -381,11 +531,11 @@ def register_transcriptor_tools(mcp):
             "image_base64": base64.b64encode(image).decode(),
         }
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     def get_playlist_transcripts(
         url: str,
+        lang: str,
         type: str = "auto",
-        lang: str = "en",
         format: str = "srt",
         playlistItems: str | None = None,
         maxItems: int = 10,

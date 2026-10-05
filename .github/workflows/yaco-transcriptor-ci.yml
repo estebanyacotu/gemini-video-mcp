@@ -1,0 +1,52 @@
+name: Yaco Transcriptor CI
+
+on:
+  push:
+    branches:
+      - yaco-transcriptor-mobile
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  contract-and-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Unit and contract tests
+        env:
+          GEMINI_API_KEY: test-key-not-a-real-credential
+        run: python -m unittest -v test_transcriptor.py
+
+      - name: Live Streamable HTTP MCP test
+        env:
+          GEMINI_API_KEY: test-key-not-a-real-credential
+          PORT: "8765"
+          YT_DLP_MAX_CONCURRENCY: "2"
+          YT_DLP_MAX_QUEUE: "4"
+          YT_DLP_TIMEOUT: "90"
+          SUBTITLES_RATE_LIMIT_HOLD_SECONDS: "60"
+        run: |
+          set -euo pipefail
+          python app.py > /tmp/yaco-mcp.log 2>&1 &
+          server_pid=$!
+          trap 'cat /tmp/yaco-mcp.log || true; kill "$server_pid" 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 30); do
+            if curl -sS http://127.0.0.1:8765/mcp -o /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          MCP_URL=http://127.0.0.1:8765/mcp python test_live_mcp.py

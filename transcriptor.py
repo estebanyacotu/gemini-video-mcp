@@ -1,9 +1,11 @@
 import base64
 import hashlib
 import html
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +13,8 @@ import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+import zipfile
 
 import imageio_ffmpeg
 
@@ -28,7 +32,14 @@ YT_DLP_JS_RUNTIMES = os.environ.get("YT_DLP_JS_RUNTIMES", "deno").strip()
 YT_DLP_REMOTE_COMPONENTS = os.environ.get("YT_DLP_REMOTE_COMPONENTS", "ejs:github").strip()
 YT_DLP_EXTRACTOR_ARGS = os.environ.get(
     "YT_DLP_EXTRACTOR_ARGS",
-    "youtube:player_client=default,web_embedded",
+    "youtube:player_client=mweb",
+).strip()
+BGUTIL_ENABLED = os.environ.get("BGUTIL_POT_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+BGUTIL_VERSION = os.environ.get("BGUTIL_POT_VERSION", "2.0.1").strip()
+BGUTIL_BOOTSTRAP_TIMEOUT = max(30, int(os.environ.get("BGUTIL_BOOTSTRAP_TIMEOUT", "180")))
+BGUTIL_ARCHIVE_URL = os.environ.get(
+    "BGUTIL_POT_ARCHIVE_URL",
+    f"https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/{BGUTIL_VERSION}.zip",
 ).strip()
 
 READ_ONLY_ANNOTATIONS = {
@@ -59,6 +70,9 @@ _transcript_cache: dict[str, tuple[float, str]] = {}
 _caption_lock = threading.Lock()
 _caption_hold_until = 0.0
 _caption_next_hold = SUBTITLE_HOLD_BASE
+
+_provider_lock = threading.Lock()
+_provider_home: str | None = None
 
 
 def _cache_get(cache: dict, key: str, ttl: int):
@@ -109,6 +123,99 @@ def _clear_caption_hold():
         _caption_hold_until = 0.0
         _caption_next_hold = SUBTITLE_HOLD_BASE
 
+
+
+def _is_youtube_invocation(args: tuple[str, ...]) -> bool:
+    return any(
+        "youtube.com/" in value
+        or "youtu.be/" in value
+        or value.startswith("ytsearch")
+        for value in args
+    )
+
+
+def _safe_extract_bgutil_server(archive_bytes: bytes, target: Path) -> None:
+    prefix = f"bgutil-ytdlp-pot-provider-{BGUTIL_VERSION}/server/"
+    target.mkdir(parents=True, exist_ok=True)
+    target_root = target.resolve()
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+        found = False
+        for member in archive.infolist():
+            if not member.filename.startswith(prefix):
+                continue
+            relative = member.filename[len(prefix):]
+            if not relative:
+                continue
+            destination = (target / relative).resolve()
+            if target_root not in destination.parents and destination != target_root:
+                raise RuntimeError("unsafe path in bgutil provider archive")
+            if member.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, open(destination, "wb") as output:
+                shutil.copyfileobj(source, output)
+            found = True
+        if not found:
+            raise RuntimeError("bgutil provider archive did not contain server files")
+
+
+def _ensure_bgutil_provider() -> str | None:
+    global _provider_home
+    if not BGUTIL_ENABLED:
+        return None
+    if _provider_home and Path(_provider_home, "src", "generate_once.ts").is_file():
+        return _provider_home
+
+    with _provider_lock:
+        if _provider_home and Path(_provider_home, "src", "generate_once.ts").is_file():
+            return _provider_home
+
+        base = Path(tempfile.gettempdir()) / f"yaco-bgutil-{BGUTIL_VERSION}"
+        server_home = base / "server"
+        script = server_home / "src" / "generate_once.ts"
+        ready = server_home / ".yaco-ready"
+
+        if not script.is_file():
+            if base.exists():
+                shutil.rmtree(base, ignore_errors=True)
+            request = Request(
+                BGUTIL_ARCHIVE_URL,
+                headers={"User-Agent": "Yaco-Transcriptor/1.0"},
+            )
+            try:
+                with urlopen(request, timeout=60) as response:
+                    archive_bytes = response.read(20 * 1024 * 1024 + 1)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"failed to download bgutil provider {BGUTIL_VERSION}: {exc}"
+                ) from exc
+            if len(archive_bytes) > 20 * 1024 * 1024:
+                raise RuntimeError("bgutil provider archive exceeded 20 MB")
+            _safe_extract_bgutil_server(archive_bytes, server_home)
+
+        if not ready.is_file():
+            deno = shutil.which("deno")
+            if not deno:
+                raise RuntimeError("Deno runtime is unavailable for bgutil PO-token provider")
+            try:
+                install = subprocess.run(
+                    [deno, "install", "--allow-scripts=npm:canvas", "--frozen"],
+                    cwd=str(server_home),
+                    capture_output=True,
+                    text=True,
+                    timeout=BGUTIL_BOOTSTRAP_TIMEOUT,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("bgutil provider dependency install timed out") from exc
+            if install.returncode != 0:
+                detail = (install.stderr or install.stdout or "deno install failed")[-3000:]
+                raise RuntimeError(f"bgutil provider setup failed: {detail}")
+            ready.write_text(BGUTIL_VERSION, encoding="utf-8")
+
+        _provider_home = str(server_home)
+        return _provider_home
 
 def _normalize_url(raw: str) -> str:
     if not raw:

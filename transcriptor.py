@@ -308,6 +308,13 @@ def _ytdlp(*args: str, timeout: int | None = None, binary: bool = False):
         common.extend(["--remote-components", YT_DLP_REMOTE_COMPONENTS])
     if YT_DLP_EXTRACTOR_ARGS:
         common.extend(["--extractor-args", YT_DLP_EXTRACTOR_ARGS])
+    if BGUTIL_ENABLED and _is_youtube_invocation(args):
+        provider_home = _ensure_bgutil_provider()
+        if provider_home:
+            common.extend([
+                "--extractor-args",
+                f"youtubepot-bgutilscript:server_home={provider_home}",
+            ])
     return _run(
         [sys.executable, "-m", "yt_dlp", *common, *args],
         timeout=timeout,

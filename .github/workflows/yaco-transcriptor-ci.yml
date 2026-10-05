@@ -86,3 +86,9 @@ jobs:
                   "stderr_tail": proc.stderr[-700:],
               }, ensure_ascii=False))
           PY
+
+      - name: Render staging end-to-end
+        if: always()
+        env:
+          MCP_URL: "https://gemini-video-mcp-yaco-staging.onrender.com/mcp"
+        run: python test_live_mcp.py

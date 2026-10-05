@@ -1,0 +1,34 @@
+name: Yaco Transcriptor CI
+
+on:
+  push:
+    branches:
+      - yaco-transcriptor-mobile
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  contract-and-render-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Unit and MCP contract tests
+        env:
+          GEMINI_API_KEY: test-key-not-a-real-credential
+        run: python -m unittest -v test_transcriptor.py
+
+      - name: Render staging end-to-end
+        env:
+          MCP_URL: "https://gemini-video-mcp-yaco-staging.onrender.com/mcp"
+        run: python test_live_mcp.py

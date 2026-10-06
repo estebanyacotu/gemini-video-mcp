@@ -46,6 +46,19 @@ class RepairTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Subtitle track unavailable'):
             transcriptor._choose_track({'subtitles': {'live_chat': [{'ext': 'json'}]}}, None, None, 'srt')
 
+    def test_fallback_only_for_server_errors(self):
+        for code in [503, 400]:
+            sdk=Mock()
+            sdk.models.generate_content.side_effect=[app.errors.APIError(code, {'error': {'code': code, 'message': 'test'}}), SimpleNamespace(text='audio result')]
+            with self.subTest(code=code), patch.object(app, 'client', sdk):
+                if code == 503:
+                    result=app.generate_video(['test'])
+                    self.assertIn(app.FALLBACK_MODEL, result)
+                    self.assertEqual(sdk.models.generate_content.call_count, 2)
+                else:
+                    with self.assertRaises(app.errors.APIError): app.generate_video(['test'])
+                    self.assertEqual(sdk.models.generate_content.call_count, 1)
+
     def test_missing_key_reports_real_error(self):
         with patch.object(app, 'client', None), self.assertRaisesRegex(RuntimeError, 'GEMINI_API_KEY'):
             app.analizar_video(url='https://youtu.be/v3-odNpotVc')

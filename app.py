@@ -14,6 +14,7 @@ from google.genai import types, errors
 from mcp.server.fastmcp import FastMCP
 
 from transcriptor import register_transcriptor_tools
+from tiktok_auditor import register_tiktok_tools
 
 
 PORT = int(os.environ.get("PORT", 8000))
@@ -166,6 +167,7 @@ def analizar_video(
 
 
 register_transcriptor_tools(mcp)
+register_tiktok_tools(mcp)
 
 
 @mcp.custom_route("/health", methods=["GET"])

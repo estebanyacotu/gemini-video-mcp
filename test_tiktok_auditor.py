@@ -1,12 +1,77 @@
 import unittest
+import json
+import subprocess
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import tiktok_auditor as t
+from mcp.server.fastmcp import FastMCP
 
 
 class TikTokAuditorTests(unittest.TestCase):
+    def test_tikwm_rejects_non_object_json_and_accepts_relative_media(self):
+        for payload in [b"[]", b"null", b"123"]:
+            with self.assertRaises(t.TikTokError):
+                t.parse_tikwm(payload)
+        url, _ = t.parse_tikwm(b'{"code":0,"data":{"play":"/video/example.mp4"}}')
+        self.assertEqual(url, "https://www.tikwm.com/video/example.mp4")
+
+    def test_provider_failure_is_not_claimed_as_absent_captions(self):
+        with patch.object(t, "obtain_tiktok", return_value=(Path("unused"), {
+            "resolved_url": None, "requested_url": "https://vt.tiktok.com/example/"
+        })), patch("transcriptor._subtitle_payload", side_effect=RuntimeError("HTTP 429")), \
+                patch.dict(t.os.environ, {"LOCAL_ASR": "0"}):
+            result = t.captions_tiktok("https://vt.tiktok.com/example/")
+        self.assertEqual(result["status"], "transcripcion_no_obtenida")
+        self.assertIn("429", result["details"])
+
+    def test_real_media_without_ffprobe_and_native_mcp_image(self):
+        with TemporaryDirectory() as temp:
+            clip = Path(temp) / "sample.mp4"
+            subprocess.run([t.imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-f", "lavfi",
+                            "-i", "color=c=red:s=320x240:d=2", "-c:v", "libx264", "-y", str(clip)],
+                           check=True, timeout=20, capture_output=True)
+            with patch.object(t.shutil, "which", return_value=None):
+                technical = t._probe(clip)
+            self.assertAlmostEqual(technical["duration_seconds"], 2, places=1)
+            self.assertEqual(technical["streams"][0]["width"], 320)
+            info = {"requested_url": "https://vt.tiktok.com/example/", "technical": technical}
+            mcp = FastMCP("test", stateless_http=True, json_response=True)
+            t.register_tiktok_tools(mcp)
+            # Exercise the actual HTTP MCP handler, not only the Python return value.
+            from starlette.testclient import TestClient
+            with patch.object(t, "obtain_tiktok", return_value=(clip, info)):
+                with TestClient(mcp.streamable_http_app(), base_url="http://localhost:8000") as client:
+                    response = client.post("/mcp", headers={"Accept": "application/json, text/event-stream"},
+                                           json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                                 "params": {"name": "fotograma_tiktok", "arguments": {
+                                                     "url": info["requested_url"], "seconds": 0.5, "width": 320}}})
+                self.assertEqual(response.status_code, 200)
+                result = response.json()["result"]
+                self.assertFalse(result.get("isError", False))
+                self.assertEqual([b["type"] for b in result["content"]], ["text", "image"])
+                self.assertEqual(result["content"][1]["mimeType"], "image/jpeg")
+                self.assertEqual(json.loads(result["content"][0]["text"])["seconds"], 0.5)
+                with self.assertRaises(ValueError):
+                    t.capture_tiktok_frame(info["requested_url"], 2)
+
+    def test_cache_reader_holds_lock_against_other_threads(self):
+        observed = []
+        def other_thread():
+            acquired = t._LOCK.acquire(blocking=False)
+            observed.append(acquired)
+            if acquired:
+                t._LOCK.release()
+        @t.uses_cached_media
+        def reader():
+            worker = threading.Thread(target=other_thread)
+            worker.start()
+            worker.join(timeout=2)
+        reader()
+        self.assertEqual(observed, [False])
+
     def test_invalid_source_and_api_urls_are_rejected(self):
         for url in ["http://vt.tiktok.com/x", "https://vt.tiktok.com.evil.org/x", "https://localhost/x"]:
             with self.assertRaises(ValueError):
@@ -48,3 +113,4 @@ class TikTokAuditorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

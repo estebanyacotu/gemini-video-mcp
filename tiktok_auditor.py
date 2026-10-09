@@ -6,10 +6,14 @@ local faster-whisper (opt in via LOCAL_ASR=1). TikWM is a third-party fallback.
 from __future__ import annotations
 
 import base64
+import asyncio
 import hashlib
 import ipaddress
 import json
+import math
 import os
+from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 import re
 import shutil
@@ -20,10 +24,11 @@ import tempfile
 import threading
 import time
 from urllib.error import URLError
-from urllib.parse import urlsplit, urlunsplit, urlencode
+from urllib.parse import urlsplit, urlunsplit, urlencode, urljoin
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import imageio_ffmpeg
+from mcp.types import CallToolResult, ImageContent, TextContent
 
 ALLOWED_TIKTOK = {"tiktok.com", "www.tiktok.com", "m.tiktok.com", "vt.tiktok.com", "vm.tiktok.com"}
 TIKWM_URL = "https://www.tikwm.com/api/"
@@ -31,12 +36,31 @@ USER_AGENT = "Mozilla/5.0 (compatible; YacoTikTokAuditor/1.1)"
 MAX_MB = max(5, min(100, int(os.getenv("TIKTOK_MAX_MB", "60"))))
 MAX_BYTES = MAX_MB * 1024 * 1024
 CACHE_SECONDS = 600
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 _CACHE: dict[str, tuple[float, str, dict]] = {}
 
 
 class TikTokError(RuntimeError):
     pass
+
+
+@contextmanager
+def media_lock():
+    # Hold while reading cached files too: another request must not delete them.
+    if not _LOCK.acquire(timeout=3):
+        raise TikTokError("Servidor ocupado; reintenta al terminar la petición actual")
+    try:
+        yield
+    finally:
+        _LOCK.release()
+
+
+def uses_cached_media(function):
+    @wraps(function)
+    def protected(*args, **kwargs):
+        with media_lock():
+            return function(*args, **kwargs)
+    return protected
 
 
 def normalize_url(value: str) -> str:
@@ -93,12 +117,16 @@ def parse_tikwm(payload: bytes) -> tuple[str, dict]:
         result = json.loads(payload)
     except (ValueError, UnicodeDecodeError) as exc:
         raise TikTokError("TikWM devolvió JSON inválido") from exc
+    if not isinstance(result, dict):
+        raise TikTokError("TikWM devolvió una estructura inválida")
     if result.get("code") != 0 or not isinstance(result.get("data"), dict):
         raise TikTokError("TikWM no encontró el video: " + str(result.get("msg", "sin detalles"))[:120])
     data = result["data"]
     link = next((data.get(k) for k in ("hdplay", "play", "wmplay") if isinstance(data.get(k), str) and data.get(k)), None)
     if not link:
         raise TikTokError("TikWM no devolvió enlace reproducible")
+    if link.startswith("/") and not link.startswith("//"):
+        link = urljoin(TIKWM_URL, link)
     p = urlsplit(link)
     if p.scheme != "https" or not p.hostname or p.username or p.password or p.port:
         raise TikTokError("Enlace multimedia inválido")
@@ -123,6 +151,7 @@ def download_media(url: str, destination: Path) -> int:
         raise TikTokError("Enlace de video inválido")
     _public_host(p.hostname)
     req = Request(url, headers={"User-Agent": USER_AGENT, "Referer": "https://www.tiktok.com/"})
+    deadline = time.monotonic() + 60
     try:
         with build_opener(SafeRedirects("media")).open(req, timeout=25) as response, destination.open("wb") as out:
             content_length = response.headers.get("Content-Length")
@@ -134,6 +163,8 @@ def download_media(url: str, destination: Path) -> int:
             out.write(header)
             size = len(header)
             while block := response.read(128 * 1024):
+                if time.monotonic() > deadline:
+                    raise TikTokError("La descarga excedió el tiempo permitido")
                 size += len(block)
                 if size > MAX_BYTES:
                     raise TikTokError("Video mayor al límite")
@@ -147,21 +178,41 @@ def download_media(url: str, destination: Path) -> int:
 def _probe(path: Path) -> dict:
     exe = shutil.which("ffprobe")
     if not exe:
-        # imageio-ffmpeg includes ffmpeg, not necessarily ffprobe.
-        return {"status": "ffprobe_no_disponible"}
+        # Render's Python runtime may only have imageio's bundled ffmpeg.
+        r = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-i", str(path)],
+                           capture_output=True, text=True, timeout=15)
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", r.stderr)
+        if not match or "Video:" not in r.stderr:
+            raise TikTokError("No se pudo comprobar duración y pista de video")
+        hours, minutes, seconds = map(float, match.groups())
+        duration = hours * 3600 + minutes * 60 + seconds
+        if not math.isfinite(duration) or duration <= 0:
+            raise TikTokError("Duración del video inválida")
+        dimensions = re.search(r"Video:.*?\b(\d{2,5})x(\d{2,5})\b", r.stderr)
+        streams = [{"type": "video"}]
+        if dimensions:
+            streams[0].update(width=int(dimensions[1]), height=int(dimensions[2]))
+        if "Audio:" in r.stderr:
+            streams.append({"type": "audio"})
+        return {"duration_seconds": duration, "streams": streams, "probe": "ffmpeg"}
     r = subprocess.run([exe, "-v", "error", "-show_format", "-show_streams", "-of", "json", str(path)],
                        capture_output=True, text=True, timeout=15)
     if r.returncode:
         raise TikTokError("El archivo MP4 no pudo inspeccionarse con ffprobe")
     data = json.loads(r.stdout)
-    return {"duration_seconds": float(data.get("format", {}).get("duration") or 0),
+    duration = float(data.get("format", {}).get("duration") or 0)
+    if not math.isfinite(duration) or duration <= 0 or not any(
+        s.get("codec_type") == "video" for s in data.get("streams", [])
+    ):
+        raise TikTokError("El archivo no contiene video con duración válida")
+    return {"duration_seconds": duration, "probe": "ffprobe",
             "streams": [{"type": s.get("codec_type"), "codec": s.get("codec_name"),
                          "width": s.get("width"), "height": s.get("height")}
                         for s in data.get("streams", [])]}
 
 
 def _yt_download(url: str, path: Path) -> dict:
-    args = [sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-progress", "--no-warnings",
+    args = [sys.executable, "-m", "yt_dlp", "--ignore-config", "--no-playlist", "--no-progress", "--no-warnings",
             "--max-filesize", f"{MAX_MB}M", "--socket-timeout", "12", "--retries", "1",
             "--format", "best[ext=mp4]/best", "-o", str(path), url]
     r = subprocess.run(args, capture_output=True, text=True, timeout=65)
@@ -178,11 +229,18 @@ def _yt_download(url: str, path: Path) -> dict:
 def obtain_tiktok(url: str) -> tuple[Path, dict]:
     original = normalize_url(url)
     key = hashlib.sha256(original.encode()).hexdigest()
-    with _LOCK:
+    with media_lock():
         cached = _CACHE.get(key)
         if cached and time.monotonic() - cached[0] <= CACHE_SECONDS and Path(cached[1]).is_file():
             return Path(cached[1]), cached[2]
         work = Path(tempfile.gettempdir()) / "yaco-tiktok" / key
+        # Clear stale/failed downloads, including .part files, before retrieving.
+        root = work.parent
+        if root.exists():
+            for stale in root.iterdir():
+                if stale.is_dir() and re.fullmatch(r"[0-9a-f]{64}", stale.name):
+                    shutil.rmtree(stale, ignore_errors=True)
+        _CACHE.clear()
         work.mkdir(parents=True, exist_ok=True)
         path = work / "clip.mp4"
         path.unlink(missing_ok=True)
@@ -211,6 +269,7 @@ def obtain_tiktok(url: str) -> tuple[Path, dict]:
         return path, result
 
 
+@uses_cached_media
 def capture_tiktok_frame(url: str, seconds: float = 0.0, width: int = 720) -> dict:
     seconds = float(seconds)
     if not (0 <= seconds <= 600):
@@ -218,7 +277,7 @@ def capture_tiktok_frame(url: str, seconds: float = 0.0, width: int = 720) -> di
     width = max(240, min(1080, int(width)))
     path, info = obtain_tiktok(url)
     duration = info["technical"].get("duration_seconds")
-    if duration and seconds > duration:
+    if duration and seconds >= duration:
         raise ValueError("El tiempo excede la duración comprobada")
     cmd = [imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-ss", str(seconds),
            "-i", str(path), "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "4",
@@ -231,6 +290,7 @@ def capture_tiktok_frame(url: str, seconds: float = 0.0, width: int = 720) -> di
             "sampling": "fotograma_individual; no_equivale_a_reproduccion_continua"}
 
 
+@uses_cached_media
 def captions_tiktok(url: str) -> dict:
     """Use the existing source-caption extractor; optional CPU ASR needs explicit setup."""
     from transcriptor import _subtitle_payload
@@ -242,7 +302,7 @@ def captions_tiktok(url: str) -> dict:
     except Exception as exc:
         failure = str(exc)[:250]
     if os.getenv("LOCAL_ASR") != "1":
-        return {"status": "sin_subtitulos", "details": failure,
+        return {"status": "transcripcion_no_obtenida", "details": failure,
                 "local_asr": "no habilitado", "literal_verified_by_listening": False}
     try:
         from faster_whisper import WhisperModel
@@ -269,17 +329,23 @@ def register_tiktok_tools(mcp):
     annotations = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 
     @mcp.tool(annotations=annotations)
-    def obtener_tiktok(url: str) -> dict:
+    async def obtener_tiktok(url: str) -> dict:
         """Resolve a public TikTok short/full URL, retrieve a bounded MP4 at no vidIQ cost, return measured metadata and availability. Use before visual/audio review."""
-        _path, result = obtain_tiktok(url)
+        _path, result = await asyncio.to_thread(obtain_tiktok, url)
         return result
 
     @mcp.tool(annotations=annotations)
-    def fotograma_tiktok(url: str, seconds: float = 0, width: int = 720) -> dict:
-        """Return one observed JPEG frame (base64) from the exact TikTok at a clip-relative second. Not continuous playback."""
-        return capture_tiktok_frame(url, seconds, width)
+    async def fotograma_tiktok(url: str, seconds: float = 0, width: int = 720) -> CallToolResult:
+        """Return a native MCP image plus source and clip-relative timestamp. One sampled frame is not continuous playback."""
+        frame = await asyncio.to_thread(capture_tiktok_frame, url, seconds, width)
+        data = frame.pop("image_base64")
+        return CallToolResult(content=[
+            TextContent(type="text", text=json.dumps(frame, ensure_ascii=False)),
+            ImageContent(type="image", data=data, mimeType=frame["mimeType"]),
+        ])
 
     @mcp.tool(annotations=annotations)
-    def transcripcion_tiktok(url: str) -> dict:
+    async def transcripcion_tiktok(url: str) -> dict:
         """Return timestamped original provider captions or optional on-server CPU ASR; label source and never invent verbatim speech."""
-        return captions_tiktok(url)
+        return await asyncio.to_thread(captions_tiktok, url)
+

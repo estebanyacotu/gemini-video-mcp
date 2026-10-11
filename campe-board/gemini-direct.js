@@ -51,10 +51,20 @@ async function testCredential(){
   return {ok:true,status:"conexión autenticada",model:MODEL,modelListed:available};
  }catch(e){return {ok:false,status:e.status||"red",reason:e.reason||e.message.slice(0,90)}}
 }
+async function testGeneration(){
+ try{
+  const body=await googleFetch("/models/"+encodeURIComponent(MODEL)+":generateContent",{
+   method:"POST",body:JSON.stringify({contents:[{parts:[{text:"Di solo OK."}]}],generationConfig:{maxOutputTokens:100}})
+  },25000);
+  return {ok:!!body.candidates?.length,status:"generación de texto disponible",model:MODEL};
+ }catch(e){
+  return {ok:false,status:e.status||"red",reason:e.reason||"error",message:String(e.message).slice(0,150)};
+ }
+}
 async function testVideo(url){
  const output=await analyzeVideo(url,
   "Comprueba si puedes acceder al video real y reconocer su audio. Responde solo JSON: {\"accessible\":true/false,\"duration_seconds\":numero}. Incluye duración solo si es verificable. No inventes.");
  let json=null;try{json=JSON.parse(output.text.match(/\{[\s\S]*?\}/)?.[0]||"")}catch{}
  return {ok:json?.accessible===true,duration:Number(json?.duration_seconds)||0};
 }
-module.exports={analyzeVideo,testCredential,testVideo};
+module.exports={analyzeVideo,testCredential,testGeneration,testVideo};

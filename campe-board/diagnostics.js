@@ -1,2 +1,10 @@
-const urls=["https://gemini-video-mcp-4ev0.onrender.com/health","https://gemini-video-mcp-yaco-staging.onrender.com/health","https://formula-campe-news-tablero.onrender.com/health"];
-(async()=>{for(const url of urls){try{const r=await fetch(url,{signal:AbortSignal.timeout(25000)});const content=await r.text();console.log(url,r.status,content.slice(0,900));}catch(e){console.log(url,"ERR",e.message)}}})();
+const base="https://gemini-video-mcp-4ev0.onrender.com";
+(async()=>{
+ const r=await fetch(base+"/health",{signal:AbortSignal.timeout(30000)});console.log("HEALTH",r.status,await r.text());
+ const ctl=AbortSignal.timeout(175000);
+ const prompt="Transcribe exclusivamente los primeros 10 segundos de audio hablado de este video en español. Devuelve exactamente WEBVTT con marcas de tiempo. Si no puedes acceder al audio responde NO_AUDIO. No supongas contenido.";
+ try{
+  const response=await fetch(base+"/mcp",{method:"POST",signal:ctl,headers:{"Content-Type":"application/json","Accept":"application/json, text/event-stream","MCP-Protocol-Version":"2025-03-26"},body:JSON.stringify({jsonrpc:"2.0",id:24,method:"tools/call",params:{name:"analizar_video",arguments:{url:"https://www.youtube.com/watch?v=dQw4w9WgXcQ",instruccion:prompt}}})});
+  const body=await response.text(); console.log("GEMINI_STATUS",response.status); console.log("GEMINI_RESPONSE",body.slice(0,1800));
+ }catch(e){console.log("GEMINI_ERROR",e.message)}
+})();

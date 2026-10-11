@@ -66,6 +66,6 @@ async function fromGemini({url,duration,mcpTool,onProgress=()=>{},title="",chann
  const unique=all.filter((x,i)=>!i||x.start!==all[i-1].start||x.text!==all[i-1].text);
  return materialize(url,toSrt(unique),{title,channel,duration,source:"Gemini · reconocimiento de audio",
   subtitleType:"ai",language:"idioma del audio",method:"Audio transcrito con IA y ranking editorial",
-  transcriptionDisclaimer:"Transcripción automática desde audio, no subtítulos literales certificados. Puede contener errores y necesita revisión del audio."});
+  transcriptionDisclaimer:"Transcripción generada por IA desde audio: no equivale a subtítulos literales certificados. Puede contener errores; revisa el audio."});
 }
 module.exports={parseGenerated,toSrt,materialize,fromGemini,timeValue,srtTime};

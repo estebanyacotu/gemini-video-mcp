@@ -21,6 +21,8 @@ function ip(req){return (req.headers["x-forwarded-for"]||req.socket.remoteAddres
 function limit(addr){let now=Date.now(),a=attempts.get(addr)||[];a=a.filter(t=>now-t<15*60*1000);attempts.set(addr,a);if(attempts.size>10000)attempts.clear();return a;}
 
 const {parseSrt,mine}=require("./miner");
+const {materialize,fromGemini}=require("./auto-transcript");
+const jobs=new Map();
 const MCP_URL=process.env.TRANSCRIPTOR_MCP_URL||"https://gemini-video-mcp-4ev0.onrender.com/mcp";
 function videoUrl(raw){
  const u=new URL(String(raw||"").trim());
@@ -56,11 +58,81 @@ async function mcpTool(name,args){
   }
   let value=data.result?.structuredContent;
   if(!value){const field=data.result?.content?.find(c=>typeof c.text==="string");if(field){try{value=JSON.parse(field.text)}catch{value={content:field.text}}}}
+  if(name==="analizar_video"){
+   const textResult=typeof value?.result==="string"?value.result:
+      typeof value?.text==="string"?value.text:
+      data.result?.content?.find(c=>typeof c.text==="string")?.text||"";
+   return {text:textResult};
+  }
   if(value?.result&&!value.content&&!value.title)value=value.result;
   if(!value||typeof value!=="object")throw Error("El transcriptor devolvió un formato desconocido.");
   return value;
  }finally{clearTimeout(timeout)}
 }
+
+async function extractSource(url,onProgress=()=>{}){
+ onProgress({stage:"Buscando subtítulos originales de YouTube",progress:3});
+ let subtitleError=null,subtitles=null,info={};
+ try{
+  subtitles=await mcpTool("get_raw_subtitles",{url,format:"srt"});
+  if(!subtitles.content||subtitles.is_truncated)throw Error("El proveedor no devolvió el SRT completo.");
+  if(subtitles.total_length&&subtitles.content.length!==subtitles.total_length)throw Error("El SRT llegó incompleto.");
+  parseSrt(subtitles.content);
+ }catch(e){subtitleError=e;subtitles=null;console.warn("Original captions unavailable:",e.message.slice(0,170));}
+ onProgress({stage:subtitles?"Leyendo datos del live":"Subtítulos no disponibles: preparando reconocimiento de audio",progress:8});
+ try{info=await mcpTool("get_video_info",{url})}catch(e){console.warn("Metadata unavailable:",e.message.slice(0,170));}
+ const duration=Number(info.duration)||0;
+ if(subtitles){
+  return materialize(url,subtitles.content,{
+   title:info.title||"Live de YouTube",channel:info.channel||"",
+   duration:duration||undefined,subtitleType:subtitles.type||"desconocido",
+   language:subtitles.lang||"desconocido",source:subtitles.source||"yt-dlp",
+   method:"Subtítulos originales extraídos de YouTube; minería y ranking editorial"
+  });
+ }
+ if(!duration)throw Error("El video no entregó subtítulos ni metadatos accesibles. Puede estar privado, eliminado, restringido o no disponible desde el servidor. Verifica que el enlace abra en YouTube.");
+ onProgress({stage:"Reconociendo el audio del video automáticamente",progress:10});
+ return await fromGemini({url,duration,mcpTool,onProgress,title:info.title||"Live de YouTube",channel:info.channel||""});
+}
+function apiSend(res,status,data){send(res,status,JSON.stringify(data),"application/json; charset=utf-8");}
+function validateOrigin(req){
+ if(!req.headers.origin)return;
+ if(new URL(req.headers.origin).host!==req.headers.host)throw Error("Origen no autorizado.");
+}
+function sessionFingerprint(req){
+ const x=(req.headers.cookie||"").split(";").map(s=>s.trim()).find(s=>s.startsWith("campe_session="))||"";
+ return crypto.createHash("sha256").update(x).digest("hex");
+}
+function sweepJobs(){
+ const now=Date.now();
+ for(const [k,v] of jobs)if(now-v.createdAt>2*3600000)jobs.delete(k);
+}
+async function startExtraction(req,res){
+ if(!auth(req))return apiSend(res,401,{error:"Sesión vencida."});
+ try{
+  validateOrigin(req);
+  const body=await readJson(req),url=videoUrl(body.url),owner=sessionFingerprint(req);
+  sweepJobs();
+  const active=[...jobs.values()].filter(x=>x.owner===owner&&x.status==="running");
+  if(active.length)return apiSend(res,409,{error:"Ya hay un live en proceso. Espera el resultado antes de enviar otro."});
+  if(jobs.size>=12)return apiSend(res,503,{error:"El servidor está ocupado. Reintenta más tarde."});
+  const id=crypto.randomUUID(),job={id,owner,url,createdAt:Date.now(),status:"running",stage:"Conectando",progress:0,result:null,error:null};
+  jobs.set(id,job);
+  apiSend(res,202,{id,status:"running",stage:job.stage,progress:0});
+  void (async()=>{
+   try{job.result=await extractSource(url,step=>{job.stage=step.stage;job.progress=step.progress;});job.status="complete";job.progress=100;job.stage="Transcripción y ranking terminados";}
+   catch(e){job.status="failed";job.stage="No se completó la extracción";job.error=String(e.message||e).slice(0,380);console.error("Extraction job failed:",job.error);}
+  })();
+ }catch(e){apiSend(res,/enlace|YouTube|origen|JSON/i.test(e.message)?400:500,{error:String(e.message).slice(0,250)});}
+}
+function extractionProgress(req,res,id){
+ if(!auth(req))return apiSend(res,401,{error:"Sesión vencida."});
+ const job=jobs.get(id);
+ if(!job||job.owner!==sessionFingerprint(req))return apiSend(res,404,{error:"Proceso no encontrado o expirado."});
+ apiSend(res,200,{id,status:job.status,stage:job.stage,progress:job.progress,
+  error:job.error,...(job.status==="complete"?{result:job.result}:{})});
+}
+
 async function importOriginalSrt(req,res){
  if(!auth(req))return send(res,401,JSON.stringify({error:"Acceso no autorizado."}),"application/json");
  const origin=req.headers.origin;if(origin){try{if(new URL(origin).host!==req.headers.host)return send(res,403,JSON.stringify({error:"Origen no autorizado."}),"application/json");}catch{return send(res,403,JSON.stringify({error:"Origen inválido."}),"application/json");}}
@@ -97,22 +169,8 @@ async function extract(req,res){
  try{
   const payload=await readJson(req);
   const url=videoUrl(payload.url);
-  // No simulated data: both calls go to the user's running subtitle service.
-  const subtitles=await mcpTool("get_raw_subtitles",{url,format:"srt"});
-  if(!subtitles.content||subtitles.is_truncated)throw Error("El servicio no entregó el SRT completo.");
-  if(subtitles.total_length&&subtitles.content.length!==subtitles.total_length)throw Error("La respuesta SRT no coincide con su longitud declarada.");
-  const cues=parseSrt(subtitles.content);
-  let info={};try{info=await mcpTool("get_video_info",{url})}catch(e){console.error("Optional metadata failed",e.message)}
-  const duration=Number(info.duration)||Math.ceil(cues[cues.length-1].end);
-  const clips=mine(cues,duration,5);
-  return send(res,200,JSON.stringify({
-   url,videoId:subtitles.videoId||url.slice(-11),
-   title:info.title||"Live de YouTube",channel:info.channel||"",
-   duration,subtitleType:subtitles.type||"desconocido",
-   language:subtitles.lang||"desconocido",source:subtitles.source||"yt-dlp",
-   rawSrt:subtitles.content,cues,clips,
-   totalCues:cues.length,full:true,method:"subtítulos extraídos del video; ranking editorial heurístico"
-  }),"application/json; charset=utf-8");
+  const result=await extractSource(url);
+  return apiSend(res,200,result);
  }catch(err){console.error("Extraction error",err.message);
   const invalid=/enlace|youtube|HTTPS|JSON inválido|demasiado largo/i.test(err.message);
   return send(res,invalid?400:502,JSON.stringify({error:String(err.message||"No se pudo extraer la transcripción.").slice(0,500)}),"application/json; charset=utf-8");
@@ -122,6 +180,8 @@ async function extract(req,res){
 const server=http.createServer((req,res)=>{
  if(!PASSWORD||!SESSION_SECRET){return send(res,503,"Servicio aún no configurado.","text/plain; charset=utf-8");}
  let pathname;try{pathname=new URL(req.url,"http://local").pathname;}catch(e){return send(res,400,"Ruta inválida.","text/plain");}
+ if(pathname==="/api/jobs"&&req.method==="POST"){startExtraction(req,res);return;}
+ if(pathname.startsWith("/api/jobs/")&&req.method==="GET"){extractionProgress(req,res,pathname.slice(10));return;}
  if(pathname==="/api/import-srt"&&req.method==="POST"){importOriginalSrt(req,res);return;}
  if(pathname==="/api/extract"&&req.method==="POST"){extract(req,res);return;}
  if(pathname==="/health"&&req.method==="GET")return send(res,200,JSON.stringify({ok:true,app:"campe-news-board",storage:"browser-local"}),"application/json; charset=utf-8");

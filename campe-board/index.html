@@ -22,8 +22,8 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}a{color:var(--ho
 <body>
 <header class="top"><div class="topin"><div class="brand"><div class="mark">CN</div><div><small>CONTROL EDITORIAL</small><strong>FÓRMULA CAMPE NEWS</strong></div></div><div class="topright"><span class="priv">● PRIVADO</span><form method="post" action="/logout"><button class="ghost" type="submit">Salir</button></form></div></div></header>
 <div class="wrap">
-<div class="hero"><div><div class="kicker">MINERÍA / SELECCIÓN / RECONSTRUCCIÓN</div><h1>Mesa de cortes</h1><p>Registra un live, compara de 3 a 5 candidatos y decide qué editar primero. Sin análisis externo de noticias.</p></div><div class="pills"><span class="pill">Android primero</span><span class="pill">Audio literal</span><span class="pill">Ranking editorial</span></div></div>
-<section class="section"><div class="heading"><h2>01 · Registrar fuente</h2><span class="help">Transcripción real antes de crear candidatos</span></div><form id="register" class="gridform"><div class="field"><label for="liveUrl">Enlace del live de YouTube</label><input id="liveUrl" type="url" inputmode="url" placeholder="https://www.youtube.com/live/..." autocomplete="off" required></div><div class="field"><label for="liveName">Título / identificación</label><input id="liveName" placeholder="Ej. Live del 10 de octubre" maxlength="140"></div><button class="primary" type="submit" id="extractButton">Extraer live y subtítulos</button></form><div class="actions" style="margin-top:12px"><label for="srtFile" class="secondary tiny" style="cursor:pointer">Alternativa: importar SRT auténtico</label><input id="srtFile" type="file" accept=".srt,text/plain" hidden></div><div class="listnote">Opcional: cargar SRT si necesitas trabajar con un archivo original. La app intenta la extracción automática sin requerirlo.</div><div class="listnote" id="extractStatus" role="status" aria-live="polite">La app prueba subtítulos originales. Si no están disponibles, analiza el audio con Gemini desde el servidor. No genera clips con transcripciones incompletas.</div></section>
+<div class="hero"><div><div class="kicker">MINERÍA / SELECCIÓN / RECONSTRUCCIÓN</div><h1>Mesa de cortes</h1><p>Pega un live terminado, recupera su transcripción con tiempos y elige qué clips editar primero.</p></div><div class="pills"><span class="pill">Android primero</span><span class="pill">Audio literal</span><span class="pill">Ranking editorial</span></div></div>
+<section class="section"><div class="heading"><h2>01 · Registrar fuente</h2><span class="help">Transcripción real antes de crear candidatos</span></div><form id="register" class="gridform"><div class="field"><label for="liveUrl">Enlace del live de YouTube</label><input id="liveUrl" type="url" inputmode="url" placeholder="https://www.youtube.com/live/..." autocomplete="off" required></div><div class="field"><label for="liveName">Título / identificación</label><input id="liveName" placeholder="Ej. Live del 10 de octubre" maxlength="140"></div><div class="field"><label for="supadataKey">Clave de Supadata</label><input id="supadataKey" type="password" autocomplete="off" spellcheck="false" placeholder="Pega tu clave de Supadata" aria-describedby="keyHelp"><div class="help" id="keyHelp">Obtén una clave en <a href="https://dash.supadata.ai" target="_blank" rel="noopener noreferrer">Supadata</a>. La clave se conserva únicamente en esta pestaña para tus siguientes extracciones.</div></div><button class="primary" type="submit" id="extractButton">Obtener transcripción y cortes</button></form><div class="actions" style="margin-top:12px"><label for="srtFile" class="secondary tiny" style="cursor:pointer">Alternativa: importar SRT auténtico</label><input id="srtFile" type="file" accept=".srt,text/plain" hidden></div><div class="listnote">Opcional: puedes cargar un SRT real. Para extraer desde un enlace utiliza la clave de Supadata.</div><div class="listnote" id="extractStatus" role="status" aria-live="polite">Supadata recupera subtítulos o transcribe el audio del video terminado. El estado aparece aquí. No se generan cortes sin segmentos de texto con timestamps.</div></section>
 <section class="section" id="workspace" hidden><div class="heading"><h2>02 · Fuente activa</h2><div class="actions"><button class="ghost tiny" data-action="exportjson" type="button">Respaldo JSON</button><button class="ghost tiny" type="button" id="importButton">Importar</button><input type="file" accept=".json,application/json" id="importFile" hidden><button class="ghost tiny danger" data-action="dellive" type="button">Eliminar live</button></div></div><div class="sourcebar"><div class="field"><label for="liveSelect">Seleccionar live guardado</label><select id="liveSelect"></select></div><div class="help" id="sourceInfo"></div></div></section>
 <div id="workcontent" hidden><div class="tabbar" role="tablist" aria-label="Vistas del tablero"><button type="button" class="tab active" data-tab="ranking" role="tab" aria-selected="true">Ranking de clips</button><button type="button" class="tab" data-tab="cuts" role="tab" aria-selected="false">Tabla de cortes</button><button type="button" class="tab" data-tab="transcript" role="tab" aria-selected="false">Transcripción</button></div><div class="stats"><div class="stat"><strong id="liveCount">0</strong><span>Lives registrados</span></div><div class="stat"><strong id="clipCount">0/5</strong><span>Candidatos en el live</span></div><div class="stat"><strong id="bestScore">—</strong><span>Mejor puntuación / 10</span></div></div><div id="rankingView"><div class="heading"><h2>03 · Priorizar candidatos</h2><button class="secondary" data-action="addclip" id="addClip">+ Añadir candidato</button></div><p class="help">Ranking editorial heurístico: hook 50%, tensión 30%, autonomía 20%. Audio tomado de los subtítulos extraídos, sin creación de frases nuevas.</p><div id="ranking" class="ranking"></div></div><div id="cutsView" hidden><section class="section"><div class="cuthead"><div class="field"><label for="focusSelect">Candidato para reconstrucción no lineal</label><select id="focusSelect"></select></div><div class="actions"><button type="button" class="secondary" data-action="copycuts">Copiar tabla</button><button type="button" class="secondary" data-action="exportcsv">CSV de cortes</button></div></div><p class="help" style="margin-bottom:0">El orden es el del montaje propuesto, no necesariamente el del live. El texto se obtiene automáticamente de los subtítulos al cambiar IN/OUT.</p><div id="cutSummary" class="runtime"></div><div id="cutList" class="cutlist"></div><button type="button" class="primary" data-action="addcut">+ Añadir segmento</button></section></div><div id="transcriptView" hidden><section class="section"><div class="heading"><div><h2>Transcripción fiel del video completo</h2><div class="help" id="transcriptMeta">Fuente: subtítulos originales de YouTube</div></div><div class="actions"><button class="secondary tiny" type="button" data-action="exportsrt">Descargar SRT</button><button class="secondary tiny" type="button" data-action="exporttxt">Descargar TXT</button></div></div><div class="field"><label for="searchTranscript">Buscar palabras en todo el live</label><input id="searchTranscript" placeholder="Ej. petróleo, Trump, bolsillo"></div><div class="listnote" id="transcriptCount"></div><div id="transcriptRows" class="cutlist"></div><div class="actions" style="justify-content:space-between"><button id="previousTranscript" class="secondary" type="button">Anterior</button><span id="transcriptPage" class="help"></span><button id="nextTranscript" class="secondary" type="button">Siguiente</button></div></section></div></div>
 <div class="empty" id="empty"><h3>Sin lives extraídos</h3><p>Pega una URL de YouTube. Primero se obtendrá la transcripción completa y después se habilitarán los candidatos con audio literal y timestamps.</p></div>
@@ -58,7 +58,7 @@ function renderTranscript(){
  var l=current();if(!l)return;var a=original(l),q=transcriptSearch.toLocaleLowerCase("es").trim(),items=q?a.filter(function(x){return x.text.toLocaleLowerCase("es").includes(q);}):a;
  var pages=Math.max(1,Math.ceil(items.length/100));transcriptPage=Math.min(transcriptPage,pages-1);
  var t=l.transcript||{};
- document.getElementById("transcriptMeta").textContent=(t.subtitleType==="ai"?"IA: reconocimiento de audio":t.subtitleType==="auto"?"YouTube: automáticos":t.subtitleType==="official"?"YouTube: oficiales":"SRT importado")+" · "+(t.language||"s/d")+" · "+(t.source||"origen")+" · SRT "+(t.rawSrt?t.rawSrt.length:0)+" caracteres";
+ document.getElementById("transcriptMeta").textContent=(t.subtitleType==="ai"?"IA: reconocimiento de audio":t.subtitleType==="auto"?"YouTube: automáticos":t.subtitleType==="official"?"YouTube: oficiales":t.subtitleType==="external"?"Supadata · subtítulos o voz":"SRT importado")+" · "+(t.language||"s/d")+" · "+(t.source||"origen")+" · SRT "+(t.rawSrt?t.rawSrt.length:0)+" caracteres";
  document.getElementById("transcriptCount").textContent=items.length+" fragmentos con marcas de tiempo"+(q?" coinciden con la búsqueda":" del video")+"."+(t.subtitleType==="ai"?" Transcripción IA: revisar coincidencia con audio antes de editar.":"");
  document.getElementById("transcriptRows").innerHTML=items.slice(transcriptPage*100,(transcriptPage+1)*100).map(function(x){
   return '<div class="cutrow"><div class="cuttop"><a target="_blank" rel="noopener noreferrer" href="'+safe(sourceLink(l,x.start))+'">'+fmt(Math.floor(x.start))+' → '+fmt(Math.floor(x.end))+' ↗</a><span class="help">Audio transcrito</span></div><div>'+safe(x.text)+'</div></div>';
@@ -112,33 +112,79 @@ function applyExtractedData(data,n){
  toast("Transcripción procesada: "+data.totalCues+" segmentos");
 
 }
+async function pollJob(jobId,n,status,btn){
+ let finished=false,failures=0;
+ const deadline=Date.now()+45*60*1000;
+ btn.disabled=true;btn.textContent="Procesando live…";
+ while(Date.now()<deadline){
+  await new Promise(resolve=>setTimeout(resolve,3500));
+  let job,response;
+  try{
+   response=await fetch("/api/jobs/"+encodeURIComponent(jobId),{cache:"no-store"});
+   job=await response.json();
+   if(!response.ok){
+    if(response.status===401)throw Error("Tu sesión expiró. Entra de nuevo al tablero.");
+    if(response.status===404)throw Error("El servidor se reinició y perdió el proceso. Reintenta con Supadata.");
+    throw Error(job.error||"No se pudo consultar el avance.");
+   }
+   failures=0;
+  }catch(err){
+   if(/expiró|reinició/.test(err.message))throw err;
+   failures++;
+   if(failures>12)throw Error("La conexión con el servidor continúa interrumpida. El resultado puede seguir en Supadata; revisa antes de iniciar otra extracción.");
+   status.textContent="Conexión interrumpida. Reintentando ("+failures+"/12) sin volver a cobrar el live…";
+   continue;
+  }
+  status.textContent=(job.stage||"Procesando")+(Number.isFinite(job.progress)?" · "+job.progress+"%":"")+". Si se interrumpe internet, esta pestaña intentará recuperar el resultado.";
+  if(job.status==="failed")throw Error(job.error||"Supadata no pudo completar la transcripción.");
+  if(job.status==="complete"){finished=true;break;}
+ }
+ if(!finished)throw Error("La transcripción no terminó en el tiempo disponible.");
+ applyExtractedData(job.result,n);
+ sessionStorage.removeItem("campe_pending_job");
+}
+function saveKey(){
+ var el=document.getElementById("supadataKey");
+ if(el.value)sessionStorage.setItem("campe_supadata_key",el.value.trim());
+}
+document.getElementById("supadataKey").addEventListener("change",saveKey);
 document.getElementById("register").addEventListener("submit",async function(e){
  e.preventDefault();
  const u=document.getElementById("liveUrl").value.trim(),n=document.getElementById("liveName").value.trim();
- const btn=document.getElementById("extractButton"),status=document.getElementById("extractStatus");
+ const key=document.getElementById("supadataKey").value.trim(),btn=document.getElementById("extractButton"),status=document.getElementById("extractStatus");
  if(!u||!link(u)){toast("Pega una URL válida de YouTube.");return;}
- btn.disabled=true;btn.textContent="Procesando live…";
- status.textContent="Solicitando subtítulos originales y reconocimiento de audio cuando sea necesario…";
+ if(!key){status.textContent="Necesitas tu clave de Supadata para extraer la transcripción.";document.getElementById("supadataKey").focus();return;}
+ saveKey();btn.disabled=true;btn.textContent="Conectando con Supadata…";
+ status.textContent="Solicitando transcripción real con timestamps a Supadata…";
  try{
-  const created=await fetch("/api/jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:u})});
-  const begin=await created.json();
-  if(!created.ok||!begin.id)throw Error(begin.error||"No se inició la extracción.");
-  let job,finished=false;
-  const limit=Date.now()+45*60*1000;
-  while(Date.now()<limit){
-   await new Promise(resolve=>setTimeout(resolve,2500));
-   const response=await fetch("/api/jobs/"+encodeURIComponent(begin.id),{cache:"no-store"});
-   job=await response.json();
-   if(!response.ok)throw Error(job.error||"No se pudo consultar la extracción.");
-   status.textContent=(job.stage||"Procesando")+(Number.isFinite(job.progress)?" · "+job.progress+"%":"")+". Puedes mantener la pantalla abierta.";
-   if(job.status==="failed")throw Error(job.error||"No se pudo procesar el video.");
-   if(job.status==="complete"){finished=true;break;}
+  let created;
+  try{
+   const response=await fetch("/api/jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:u,supadataKey:key})});
+   created=await response.json();
+   if(!response.ok||!created.id)throw Error(created.error||"No se inició la transcripción.");
+  }catch(err){
+   if(err instanceof TypeError)throw Error("Falló la conexión al iniciar el trabajo. Comprueba el servidor antes de repetirlo para evitar un segundo cobro.");
+   throw err;
   }
-  if(!finished)throw Error("La extracción superó el límite de espera. No hay transcripción íntegra verificada.");
-  applyExtractedData(job.result,n);
- }catch(err){status.textContent="No se pudo completar este live: "+err.message+" No se crearon candidatos.";toast("Extracción incompleta");}
- finally{btn.disabled=false;btn.textContent="Extraer live y subtítulos";}
+  sessionStorage.setItem("campe_pending_job",JSON.stringify({id:created.id,url:u,title:n}));
+  await pollJob(created.id,n,status,btn);
+ }catch(err){
+  status.textContent="No se pudo completar este live: "+err.message;
+  if(!/conexión|interrumpida/i.test(err.message))sessionStorage.removeItem("campe_pending_job");
+  toast("Extracción incompleta");
+ }finally{btn.disabled=false;btn.textContent="Obtener transcripción y cortes";}
 });
+async function resumePending(){
+ const previous=sessionStorage.getItem("campe_pending_job");
+ if(!previous)return;
+ let job;try{job=JSON.parse(previous);}catch{sessionStorage.removeItem("campe_pending_job");return;}
+ if(!job.id)return;
+ const status=document.getElementById("extractStatus"),btn=document.getElementById("extractButton");
+ status.textContent="Recuperando tu extracción anterior…";
+ try{await pollJob(job.id,job.title,status,btn);}
+ catch(err){status.textContent=err.message;sessionStorage.removeItem("campe_pending_job");}
+ finally{btn.disabled=false;btn.textContent="Obtener transcripción y cortes";}
+}
 document.getElementById("srtFile").addEventListener("change",async function(e){
  var file=e.target.files[0];if(!file)return;
  var u=document.getElementById("liveUrl").value.trim(),n=document.getElementById("liveName").value.trim(),status=document.getElementById("extractStatus");
@@ -179,6 +225,8 @@ document.getElementById("nextTranscript").addEventListener("click",function(){tr
 document.getElementById("importButton").addEventListener("click",function(){document.getElementById("importFile").click();});
 document.getElementById("importFile").addEventListener("change",async function(e){var file=e.target.files[0];if(!file)return;if(file.size>12000000){toast("El respaldo supera 2 MB.");return;}try{var x=JSON.parse(await file.text());if(!Array.isArray(x.lives)||x.lives.some(function(l){return !l||typeof l.title!=="string"||!Array.isArray(l.clips)||l.clips.length>5||l.clips.some(function(c){return !c||typeof c.id!=="string"||!Array.isArray(c.cuts);});})){throw Error("Formato inválido");}if(!confirm("¿Reemplazar todos los lives actuales por el respaldo?"))return;state.lives=x.lives;state.active=x.active||x.lives[0]?.id||null;state.focus=null;state.tab="ranking";save();render();toast("Respaldo restaurado");}catch(err){toast("JSON no compatible.");}e.target.value="";});
 load();if(state.lives.length&&!current())state.active=state.lives[0].id;render();
+try{document.getElementById("supadataKey").value=sessionStorage.getItem("campe_supadata_key")||"";}catch(e){}
+void resumePending();
 })();
 </script>
 </body></html>

@@ -22,6 +22,7 @@ function limit(addr){let now=Date.now(),a=attempts.get(addr)||[];a=a.filter(t=>n
 
 const {parseSrt,mine}=require("./miner");
 const {materialize,fromGemini}=require("./auto-transcript");
+const {analyzeVideo,testCredential,testVideo}=require("./gemini-direct");
 const jobs=new Map();
 const MCP_URL=process.env.TRANSCRIPTOR_MCP_URL||"https://gemini-video-mcp-4ev0.onrender.com/mcp";
 function videoUrl(raw){
@@ -37,6 +38,7 @@ function videoUrl(raw){
  return "https://www.youtube.com/watch?v="+id;
 }
 async function mcpTool(name,args){
+ if(name==="analizar_video"&&process.env.GEMINI_API_KEY) return analyzeVideo(args.url,args.instruccion);
  const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),150000);
  try{
   const response=await fetch(MCP_URL,{method:"POST",signal:controller.signal,headers:{
@@ -226,4 +228,12 @@ const server=http.createServer((req,res)=>{
  return send(res,404,"No encontrado.","text/plain; charset=utf-8");
 });
 const port=Number(process.env.PORT||10000);
-server.listen(port,"0.0.0.0",()=>console.log("CampeNEWS board listening on "+port));
+server.listen(port,"0.0.0.0",()=>{
+ console.log("CampeNEWS board listening on "+port);
+ if(process.env.GEMINI_API_KEY){
+  void testCredential().then(x=>console.log("Gemini credential check:",JSON.stringify(x)));
+  if(process.env.GEMINI_PROBE_VIDEO_URL){
+   void testVideo(process.env.GEMINI_PROBE_VIDEO_URL).then(x=>console.log("Gemini video access check:",JSON.stringify(x))).catch(e=>console.log("Gemini video access check:",e.status||e.reason||e.message.slice(0,120)));
+  }
+ }
+});

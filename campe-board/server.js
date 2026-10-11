@@ -236,5 +236,13 @@ server.listen(port,"0.0.0.0",()=>{
   if(process.env.GEMINI_PROBE_VIDEO_URL){
    void testVideo(process.env.GEMINI_PROBE_VIDEO_URL).then(x=>console.log("Gemini video access check:",JSON.stringify(x))).catch(e=>console.log("Gemini video access check:",e.status||e.reason||e.message.slice(0,120)));
   }
+  if(process.env.CAMPE_SMOKE_URL){
+   void extractSource(process.env.CAMPE_SMOKE_URL,()=>{}).then(result=>{
+    console.log("CampeNEWS automatic transcription smoke:",JSON.stringify({
+     complete:result.full,source:result.source,cues:result.totalCues,
+     clips:result.clips.length,duration:result.duration
+    }));
+   }).catch(e=>console.log("CampeNEWS automatic transcription smoke FAILED:",String(e.message).slice(0,170)));
+  }
  }
 });

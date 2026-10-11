@@ -21,10 +21,8 @@ function ip(req){return (req.headers["x-forwarded-for"]||req.socket.remoteAddres
 function limit(addr){let now=Date.now(),a=attempts.get(addr)||[];a=a.filter(t=>now-t<15*60*1000);attempts.set(addr,a);if(attempts.size>10000)attempts.clear();return a;}
 
 const {parseSrt,mine}=require("./miner");
-const {materialize,fromGemini}=require("./auto-transcript");
 const {extractSupadata}=require("./supadata");
 const jobs=new Map();
-const MCP_URL=process.env.TRANSCRIPTOR_MCP_URL||"https://gemini-video-mcp-4ev0.onrender.com/mcp";
 function videoUrl(raw){
  const u=new URL(String(raw||"").trim());
  if(u.protocol!=="https:")throw Error("El enlace debe utilizar HTTPS.");
@@ -36,87 +34,6 @@ function videoUrl(raw){
  }
  if(!id||!/^[A-Za-z0-9_-]{11}$/.test(id))throw Error("Pega un enlace válido de un live de YouTube.");
  return "https://www.youtube.com/watch?v="+id;
-}
-async function mcpTool(name,args){
- if(name==="analizar_video"&&process.env.GEMINI_API_KEY) return analyzeVideo(args.url,args.instruccion);
- const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),name==="get_raw_subtitles"?65000:90000);
- try{
-  const response=await fetch(MCP_URL,{method:"POST",signal:controller.signal,headers:{
-   "Content-Type":"application/json","Accept":"application/json, text/event-stream",
-   "MCP-Protocol-Version":"2025-03-26"
-  },body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/call",params:{name,arguments:args}})});
-  const text=await response.text();
-  if(!response.ok)throw Error("El transcriptor respondió HTTP "+response.status);
-  let data;
-  if((response.headers.get("content-type")||"").includes("text/event-stream")){
-   const events=text.split(/\r?\n/).filter(line=>line.startsWith("data:")).map(x=>x.slice(5).trim());
-   data=events.map(x=>{try{return JSON.parse(x)}catch{return null}}).find(x=>x&&("result"in x||"error"in x));
-  }else data=JSON.parse(text);
-  if(!data)throw Error("Respuesta del transcriptor incompleta.");
-  if(data.error)throw Error(String(data.error.message||"Error MCP"));
-  if(data.result?.isError){
-   const problem=data.result.content?.find(c=>c.text)?.text||"El transcriptor no obtuvo subtítulos.";
-   throw Error(problem.slice(0,500));
-  }
-  let value=data.result?.structuredContent;
-  if(!value){const field=data.result?.content?.find(c=>typeof c.text==="string");if(field){try{value=JSON.parse(field.text)}catch{value={content:field.text}}}}
-  if(name==="analizar_video"){
-   const textResult=typeof value?.result==="string"?value.result:
-      typeof value?.text==="string"?value.text:
-      data.result?.content?.find(c=>typeof c.text==="string")?.text||"";
-   return {text:textResult};
-  }
-  if(value?.result&&!value.content&&!value.title)value=value.result;
-  if(!value||typeof value!=="object")throw Error("El transcriptor devolvió un formato desconocido.");
-  return value;
- }finally{clearTimeout(timeout)}
-}
-
-async function extractSource(url,onProgress=()=>{}){
- onProgress({stage:"Buscando subtítulos originales de YouTube",progress:3});
- let subtitleError=null,subtitles=null,info={};
- try{
-  subtitles=await mcpTool("get_raw_subtitles",{url,format:"srt"});
-  if(!subtitles.content||subtitles.is_truncated)throw Error("El proveedor no devolvió el SRT completo.");
-  if(subtitles.total_length&&subtitles.content.length!==subtitles.total_length)throw Error("El SRT llegó incompleto.");
-  parseSrt(subtitles.content);
- }catch(e){subtitleError=e;subtitles=null;console.warn("Original captions unavailable:",e.message.slice(0,170));}
- onProgress({stage:subtitles?"Leyendo datos del live":"Subtítulos no disponibles: preparando reconocimiento de audio",progress:8});
- if(subtitles||!process.env.GEMINI_API_KEY){
-  try{info=await mcpTool("get_video_info",{url})}catch(e){console.warn("Metadata unavailable:",e.message.slice(0,170));}
- }
- let duration=Number(info.duration)||0;
- if(!subtitles&&!duration){
-  onProgress({stage:"Consultando video directamente con Gemini",progress:9});
-  if(process.env.GEMINI_API_KEY){
-   try{
-    const meta=await testVideo(url);
-    if(meta.ok&&Number.isFinite(meta.duration)&&meta.duration>0&&meta.duration<=10800)duration=meta.duration;
-   }catch(e){
-    const msg=String(e.message||e);
-    if(/403|PERMISSION_DENIED/i.test(msg))throw Error("Google no tiene permiso para abrir este live (403). La clave sí funciona con otros videos.");
-    throw Error("Google no pudo acceder al video: "+msg.slice(0,150));
-   }
-  }else{
-   try{
-    const answer=await mcpTool("analizar_video",{url,instruccion:"Abre el video y responde solo JSON con accessible (booleano) y duration_seconds (entero). No inventes duración."});
-    const matched=String(answer.text||"").match(/\{[\s\S]*?\}/);
-    const meta=matched?JSON.parse(matched[0]):null;
-    if(meta?.accessible===true&&Number.isInteger(meta.duration_seconds)&&meta.duration_seconds>0)duration=meta.duration_seconds;
-   }catch(e){console.warn("Gemini metadata inaccessible:",String(e.message).slice(0,120));}
-  }
- }
- if(subtitles){
-  return materialize(url,subtitles.content,{
-   title:info.title||"Live de YouTube",channel:info.channel||"",
-   duration:duration||undefined,subtitleType:subtitles.type||"desconocido",
-   language:subtitles.lang||"desconocido",source:subtitles.source||"yt-dlp",
-   method:"Subtítulos originales extraídos de YouTube; minería y ranking editorial"
-  });
- }
- if(!duration)throw Error("El video no entregó subtítulos ni metadatos accesibles. Puede estar privado, eliminado, restringido o no disponible desde el servidor. Verifica que el enlace abra en YouTube.");
- onProgress({stage:"Reconociendo el audio del video automáticamente",progress:10});
- return await fromGemini({url,duration,mcpTool,onProgress,title:info.title||"Live de YouTube",channel:info.channel||""});
 }
 function apiSend(res,status,data){send(res,status,JSON.stringify(data),"application/json; charset=utf-8");}
 function validateOrigin(req){
@@ -187,22 +104,6 @@ function readJson(req,max=4096){
   req.on("error",reject);
  });
 }
-async function extract(req,res){
- if(!auth(req))return send(res,401,JSON.stringify({error:"Sesión caducada. Vuelve a entrar."}),"application/json");
- const origin=req.headers.origin;const host=req.headers.host;
- if(origin&&new URL(origin).host!==host)return send(res,403,JSON.stringify({error:"Origen no autorizado."}),"application/json");
- if(!String(req.headers["content-type"]||"").startsWith("application/json"))return send(res,415,JSON.stringify({error:"Se requiere JSON."}),"application/json");
- try{
-  const payload=await readJson(req);
-  const url=videoUrl(payload.url);
-  const result=await extractSource(url);
-  return apiSend(res,200,result);
- }catch(err){console.error("Extraction error",err.message);
-  const invalid=/enlace|youtube|HTTPS|JSON inválido|demasiado largo/i.test(err.message);
-  return send(res,invalid?400:502,JSON.stringify({error:String(err.message||"No se pudo extraer la transcripción.").slice(0,500)}),"application/json; charset=utf-8");
- }
-}
-
 const server=http.createServer((req,res)=>{
  if(!PASSWORD||!SESSION_SECRET){return send(res,503,"Servicio aún no configurado.","text/plain; charset=utf-8");}
  let pathname;try{pathname=new URL(req.url,"http://local").pathname;}catch(e){return send(res,400,"Ruta inválida.","text/plain");}

@@ -1,0 +1,17 @@
+name: CampeNEWS Real YouTube End to End
+on:
+  push:
+    branches: [campe-news-dashboard]
+    paths: ['campe-board/test-real.js', '.github/workflows/campe-real.yml']
+  workflow_dispatch:
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Run actual automatic video-to-cuts job
+        run: node campe-board/test-real.js

@@ -33,7 +33,7 @@ function materialize(url,raw,opts={}){
  const cues=parseSrt(raw),duration=Number(opts.duration)||Math.ceil(cues[cues.length-1].end);
  return {url,videoId:url.slice(-11),title:opts.title||"Live de YouTube",channel:opts.channel||"",
  duration,subtitleType:opts.subtitleType||"desconocido",language:opts.language||"sin especificar",
- source:opts.source||"sin especificar",rawSrt:raw,cues,clips:mine(cues,duration,5),totalCues:cues.length,full:true,
+ source:opts.source||"sin especificar",modelsUsed:opts.modelsUsed||[],rawSrt:raw,cues,clips:mine(cues,duration,5),totalCues:cues.length,full:true,
  method:opts.method||"Minado editorial heurístico",transcriptionDisclaimer:opts.transcriptionDisclaimer||""};
 }
 async function fromGemini({url,duration,mcpTool,onProgress=()=>{},title="",channel=""}){

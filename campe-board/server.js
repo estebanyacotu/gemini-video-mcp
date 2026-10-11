@@ -22,7 +22,7 @@ function limit(addr){let now=Date.now(),a=attempts.get(addr)||[];a=a.filter(t=>n
 
 const {parseSrt,mine}=require("./miner");
 const {materialize,fromGemini}=require("./auto-transcript");
-const {analyzeVideo,testCredential,testVideo}=require("./gemini-direct");
+const {analyzeVideo,testCredential,testGeneration,testVideo}=require("./gemini-direct");
 const jobs=new Map();
 const MCP_URL=process.env.TRANSCRIPTOR_MCP_URL||"https://gemini-video-mcp-4ev0.onrender.com/mcp";
 function videoUrl(raw){
@@ -232,6 +232,7 @@ server.listen(port,"0.0.0.0",()=>{
  console.log("CampeNEWS board listening on "+port);
  if(process.env.GEMINI_API_KEY){
   void testCredential().then(x=>console.log("Gemini credential check:",JSON.stringify(x)));
+  void testGeneration().then(x=>console.log("Gemini text generation check:",JSON.stringify(x)));
   if(process.env.GEMINI_PROBE_VIDEO_URL){
    void testVideo(process.env.GEMINI_PROBE_VIDEO_URL).then(x=>console.log("Gemini video access check:",JSON.stringify(x))).catch(e=>console.log("Gemini video access check:",e.status||e.reason||e.message.slice(0,120)));
   }

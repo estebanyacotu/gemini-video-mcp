@@ -15,6 +15,8 @@ jobs:
         run: node campe-board/test.js
       - name: Validate autonomous audio recognition fallback
         run: node campe-board/test-auto.js
+      - name: Verify Gemini 3.8 priority and fallback to 3.6
+        run: node campe-board/test-gemini-models.js
       - name: Validate full private extraction job from URL to ranked clips
         run: node campe-board/test-jobs.js
   remote-captions-probe:

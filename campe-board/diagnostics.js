@@ -1,0 +1,2 @@
+const urls=["https://gemini-video-mcp-4ev0.onrender.com/health","https://gemini-video-mcp-yaco-staging.onrender.com/health","https://formula-campe-news-tablero.onrender.com/health"];
+(async()=>{for(const url of urls){try{const r=await fetch(url,{signal:AbortSignal.timeout(25000)});const content=await r.text();console.log(url,r.status,content.slice(0,900));}catch(e){console.log(url,"ERR",e.message)}}})();

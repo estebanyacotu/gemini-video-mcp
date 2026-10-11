@@ -13,8 +13,8 @@ jobs:
           node-version: '24'
       - name: Verify SRT parsing, clip mining, UI and authenticated API
         run: node campe-board/test.js
-      - name: Probe original Transcriptor provider for full SRT
+      - name: Test alternate staging yt-dlp clients with real live
         timeout-minutes: 5
         env:
-          TRANSCRIPTOR_MCP_URL: https://transcriptor.gateway.mcpal.io/mcp
+          TRANSCRIPTOR_MCP_URL: https://gemini-video-mcp-yaco-staging.onrender.com/mcp
         run: node campe-board/integration.js

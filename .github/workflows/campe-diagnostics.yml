@@ -1,0 +1,16 @@
+name: CampeNEWS Backend Capabilities
+on:
+  push:
+    branches: [campe-news-dashboard]
+    paths: ['campe-board/diagnostics.js', '.github/workflows/campe-diagnostics.yml']
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check live backend capabilities
+        run: node campe-board/diagnostics.js

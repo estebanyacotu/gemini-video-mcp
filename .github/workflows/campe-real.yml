@@ -14,4 +14,6 @@ jobs:
         with:
           node-version: '24'
       - name: Run actual automatic video-to-cuts job
+        env:
+          TEST_VIDEO_URL: https://www.youtube.com/live/kUdNL60QKtC
         run: node campe-board/test-real.js

@@ -1,6 +1,6 @@
 const $=s=>document.querySelector(s),KEY='campeBoard.v1';
 let S;try{S=JSON.parse(localStorage.getItem(KEY))}catch(e){}
-S=S||{lives:[],active:null};S.settings=S.settings||{api:'',token:''};let busy=null,mode='in',tq='',tcand=0;let tab='lives',sortBy='rank',msg=null,editing=null,warnShown=false;
+S=S||{lives:[],active:null};S.settings=S.settings||{api:'',token:''};let form={lu:'',lt:'',lc:'',ln:'',sub:''};let busy=null,mode='in',tq='',tcand=0;let tab='lives',sortBy='rank',msg=null,editing=null,warnShown=false;
 const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){setMsg('Sin espacio en el navegador: exporta el JSON y borra lives viejos.','err')}};
 const uid=()=>Math.random().toString(36).slice(2,9);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -13,7 +13,8 @@ function setMsg(t,k){msg={t,k:k||''}}
 function render(){document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t==tab));
 let h=msg?`<div class="msg ${msg.k}">${esc(msg.t)}</div>`:'';msg=null;
 h+=({lives:vLives,texto:vTexto,cands:vCands,cmp:vCmp,tabla:vTabla})[tab]();$('#view').innerHTML=h}
-function vLives(){let h=`<div class="card"><h2>Pegar link del live</h2><label>URL de YouTube</label><input id="lu" inputmode="url" placeholder="https://www.youtube.com/live/..."><div class="row"><button class="pri" data-a="extract" ${busy?'disabled':''}>Extraer transcripción</button></div><p id="prog" class="ex">${busy?esc(busy):''}</p><label>Título (se llena solo)</label><input id="lt"><label>Canal</label><input id="lc"><label>Notas</label><textarea id="ln" rows="2"></textarea><div class="row"><button data-a="addLive">Guardar sin transcripción</button></div></div>
+function vLives(){let h=`<div class="card"><h2>Pegar link del live</h2><label>URL de YouTube</label><input id="lu" value="${esc(form.lu)}" inputmode="url" placeholder="https://www.youtube.com/live/..."><div class="row"><button class="pri" data-a="extract" ${busy?'disabled':''}>Extraer transcripción</button></div><p id="prog" class="ex">${busy?esc(busy):''}</p><label>Título (se llena solo)</label><input id="lt" value="${esc(form.lt)}"><label>Canal</label><input id="lc" value="${esc(form.lc)}"><label>Notas</label><textarea id="ln" rows="2">${esc(form.ln)}</textarea><div class="row"><button data-a="addLive">Guardar sin transcripción</button></div></div>
+<div class="card"><h2>Importar subtítulos (.srt / .vtt)</h2><p class="ex">Si el servidor no puede leer YouTube, sube el archivo de subtítulos o pega su texto. Usa los campos de URL, título y canal de arriba.</p><label>Archivo</label><input id="subfile" type="file" accept=".srt,.vtt,text/plain,text/vtt"><label>o pega el texto</label><textarea id="subtxt" rows="4" placeholder="1&#10;00:00:04,680 --> 00:00:07,190&#10;...">${esc(form.sub)}</textarea><div class="row"><button class="pri" data-a="importSub">Importar subtítulos</button></div></div>
 <details class="card"><summary style="min-height:44px">⚙️ Servidor (API y token)</summary><label>URL base de la API (vacío = este mismo sitio)</label><input id="sapi" inputmode="url" value="${esc(S.settings.api)}"><label>Token de acceso</label><input id="stok" type="password" value="${esc(S.settings.token)}"><p class="ex">Se guarda solo en este teléfono.</p></details>
 <details class="card"><summary style="min-height:44px">Demo con datos de ejemplo</summary><p class="ex">Cortes de muestra del live v3-odNpotVc. Sin transcripción real.</p><button data-a="example">Cargar ejemplo (DEMO)</button></details>
 <h2>Mis lives (${S.lives.length})</h2>`;
@@ -55,6 +56,9 @@ function csvTxt(l){const q=s=>'"'+String(s??'').replace(/"/g,'""')+'"';return'\u
 function mdTxt(l){const m=s=>String(s).replace(/\|/g,'\\|').replace(/\n/g,' ');return'| # | Tema | IN | OUT | Duración | Hook | Transcripción literal | Prioridad |\n|---|---|---|---|---|---|---|---|\n'+rows(l).map(r=>`| ${r.n} | ${m(r.c.tema)} | ${r.c.inn} | ${r.c.out} | ${r.f.d!=null?fmt(r.f.d):''} | ${r.c.hook}/10 | ${m(r.c.transcript)} | ${r.c.rank} |`).join('\n')}
 function dl(name,txt,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt],{type}));a.download=name;document.body.appendChild(a);a.click();a.remove()}
 const A={extract(){const u=$('#lu').value.trim();if(!u){setMsg('Pega el link de YouTube.','err');return}doExtract(u);return 1},
+importSub(){const t=form.sub.trim();if(!t){setMsg('Elige un archivo .srt/.vtt o pega el texto.','err');return}const segs=parseSubs(t);if(!segs){setMsg('No se encontraron subtítulos válidos en ese texto (¿es SRT o VTT?).','err');return}
+const u=form.lu.trim();const id=ytId(u);let l=id&&S.lives.find(x=>x.videoId==id);if(!l){l={id:uid(),cands:[]};S.lives.push(l)}
+Object.assign(l,{url:u,title:form.lt.trim()||l.title||('Importado '+(id||'')),channel:form.lc.trim()||l.channel||'',notes:form.ln||l.notes||'',segs:segs.map(g=>g),track:'importado .'+(/^\s*WEBVTT/.test(t)?'vtt':'srt')});if(id)l.videoId=id;S.active=l.id;form={lu:'',lt:'',lc:'',ln:'',sub:''};save();setMsg(`Subtítulos importados: ${segs.length} líneas.`,'ok');tab='texto';return},
 mode(b){mode=b.dataset.m;render();return 1},
 tapline(b){const l=live(),c=l.cands[tcand];const t=+b.dataset.t,e=+b.dataset.e;if(mode=='in'){c.inn=fmt(Math.floor(t));mode='out'}else{c.out=fmt(Math.max(Math.floor(e),Math.floor(t)+1));mode='in'}save();const f=info(c);msg=null;const y=window.scrollY;render();window.scrollTo(0,y);return 1},
 insert(b){const l=live(),c=l.cands[+b.dataset.i];const t=literal(l,c);if(t==null||!t){setMsg('Define IN y OUT válidos (OUT mayor que IN) con transcripción disponible.','err');return}c.transcript=t;setMsg('Transcripción literal insertada (editable en Candidatos).','ok')},
@@ -69,17 +73,44 @@ csv(){dl('tabla_cortes.csv',csvTxt(live()),'text/csv;charset=utf-8');setMsg('CSV
 expJson(){dl('campe-board.json',JSON.stringify({lives:S.lives,active:S.active},null,1),'application/json');setMsg('JSON exportado.','ok')},impJson(){$('#imp').click();return 1}};
 document.addEventListener('click',e=>{const n=e.target.closest('nav button');if(n){tab=n.dataset.t;if(tab=='tabla'&&live()&&live().cands.length<3&&!warnShown){}render();return}
 const b=e.target.closest('[data-a]');if(!b||b.disabled)return;if(!A[b.dataset.a](b)){save();render()}});
-document.addEventListener('input',e=>{if(e.target.id=='tq'){tq=e.target.value;$('#lines').innerHTML=lineList(live());return}if(e.target.id=='sapi'||e.target.id=='stok'){S.settings.api=$('#sapi').value.trim();S.settings.token=$('#stok').value.trim();save();return}const f=e.target.dataset.f;if(!f)return;const c=live().cands[+e.target.closest('[data-i]').dataset.i];let v=e.target.value;if(f=='hook'||f=='rank')v=+v;c[f]=v;save();if(f=='inn'||f=='out')e.target.closest('.card').querySelector('.dur').innerHTML=durHtml(c);if(f=='hook'){e.target.previousElementSibling.querySelector('b').textContent=v}});
-document.addEventListener('change',e=>{if(e.target.id=='tc'){tcand=+e.target.value;render();return}if(e.target.id=='imp'){const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!Array.isArray(d.lives))throw 0;S={lives:d.lives,active:d.active||null,settings:S.settings};save();setMsg('JSON importado.','ok')}catch(x){setMsg('Archivo JSON inválido.','err')}render()};r.readAsText(e.target.files[0])}});
+document.addEventListener('input',e=>{const fk={lu:'lu',lt:'lt',lc:'lc',ln:'ln',subtxt:'sub'}[e.target.id];if(fk)form[fk]=e.target.value;if(e.target.id=='tq'){tq=e.target.value;$('#lines').innerHTML=lineList(live());return}if(e.target.id=='sapi'||e.target.id=='stok'){S.settings.api=$('#sapi').value.trim();S.settings.token=$('#stok').value.trim();save();return}const f=e.target.dataset.f;if(!f)return;const c=live().cands[+e.target.closest('[data-i]').dataset.i];let v=e.target.value;if(f=='hook'||f=='rank')v=+v;c[f]=v;save();if(f=='inn'||f=='out')e.target.closest('.card').querySelector('.dur').innerHTML=durHtml(c);if(f=='hook'){e.target.previousElementSibling.querySelector('b').textContent=v}});
+document.addEventListener('change',e=>{if(e.target.id=='subfile'){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{form.sub=String(r.result);setMsg('Archivo cargado ('+f.name+'). Pulsa “Importar subtítulos”.','ok');render()};r.readAsText(f);return}if(e.target.id=='tc'){tcand=+e.target.value;render();return}if(e.target.id=='imp'){const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!Array.isArray(d.lives))throw 0;S={lives:d.lives,active:d.active||null,settings:S.settings};save();setMsg('JSON importado.','ok')}catch(x){setMsg('Archivo JSON inválido.','err')}render()};r.readAsText(e.target.files[0])}});
+
+/* ---- Importar subtítulos (.srt/.vtt): port de server.py; no altera palabras ---- */
+function tsec(x){const p=x.replace(',','.').split(':').map(Number);while(p.length<3)p.unshift(0);return p[0]*3600+p[1]*60+p[2]}
+const r2=n=>Math.round(n*100)/100;
+function parseVttJs(txt){const words=[];let last=null;const rolling=/<\d+:\d+:\d+\.\d+><c/.test(txt);
+for(const b of txt.split(/\n\n+/)){const m=b.match(/(\d+:\d+:\d+[.,]\d+) --> (\d+:\d+:\d+[.,]\d+)/);if(!m)continue;const a=tsec(m[1]),e=tsec(m[2]);if(e-a<0.05)continue;
+const lines=b.split('\n').slice(1).filter(l=>l.trim());if(!lines.length)continue;
+if(rolling){const raw=lines[lines.length-1];const clean=raw.replace(/<[^>]+>/g,'').trim();if(words.length&&clean===last)continue;last=clean;let t=a;
+for(const p of raw.split(/(<\d+:\d+:\d+\.\d+>)/)){const mm=p.match(/^<(\d+:\d+:\d+\.\d+)>$/);if(mm){t=tsec(mm[1]);continue}
+for(const w of p.replace(/<\/?c[^>]*>/g,'').split(/\s+/).filter(Boolean))words.push([r2(t),w,e])}}
+else{const clean=lines.map(l=>l.replace(/<[^>]+>/g,'').trim()).join(' ').trim();if(!clean||clean===last)continue;last=clean;const ws=clean.split(/\s+/),st=(e-a)/ws.length;ws.forEach((w,i)=>words.push([r2(a+i*st),w,e]))}}
+return words}
+function parseSrtJs(txt){const words=[];let prev=new Set();
+for(const b of txt.replace(/\r\n/g,'\n').trim().split(/\n\s*\n/)){const ls=b.split('\n');const i=ls.findIndex(l=>l.includes('-->'));if(i<0)continue;
+const m=ls[i].match(/(\d+:\d+:\d+[.,]\d+)\s*-->\s*(\d+:\d+:\d+[.,]\d+)/);if(!m)continue;const a=tsec(m[1]),e=tsec(m[2]);
+const lines=ls.slice(i+1).map(l=>l.replace(/<[^>]+>/g,'').trim()).filter(Boolean);const nw=lines.filter(l=>!prev.has(l));prev=new Set(lines);if(!nw.length)continue;
+const ws=nw.join(' ').split(/\s+/).filter(Boolean),dur=Math.min(Math.max(e-a,0.5),0.5*ws.length),st=dur/ws.length;ws.forEach((w,k)=>words.push([r2(a+k*st),w,e]))}
+return words}
+function buildSegsJs(words,gapS=8){const segs=[];let cur=[],curLast=0;
+const flush=nx=>{if(!cur.length)return;let end=nx!=null?Math.min(nx,cur[cur.length-1][2]):cur[cur.length-1][2];if(end<=cur[0][0])end=cur[cur.length-1][0]+0.5;segs.push({s:cur[0][0],e:r2(end),t:cur.map(w=>w[1]).join(' ')});cur=[]};
+for(const w of words){if(cur.length){const gap=w[0]-cur[cur.length-1][0]>gapS;
+const brk=gap||cur.length>=10||(cur.length>=5&&/[.?!…]["”»)]?$/.test(cur[cur.length-1][1]))||(w[0]-cur[0][0]>6);
+if(brk){flush(gap?null:w[0]);if(gap)segs.push({s:Math.min(curLast+1,w[0]),e:w[0],t:`[~${Math.trunc(w[0]-curLast)} s sin transcripción automática]`,g:1})}}
+cur.push(w);curLast=w[0]}
+flush();return segs}
+function parseSubs(txt){const t=txt.replace(/^\ufeff/,'');const w=/^\s*WEBVTT/.test(t)?parseVttJs(t):parseSrtJs(t);return w.length?buildSegsJs(w):null}
+const ytId=u=>{const m=String(u||'').match(/(?:youtu\.be\/|\/live\/|\/shorts\/|\/embed\/|[?&]v=)([\w-]{11})/)||String(u||'').trim().match(/^([\w-]{11})$/);return m?m[1]:null};
 function api(){return(S.settings.api||'').replace(/\/+$/,'')}
 async function doExtract(u){S.settings.api=($('#sapi')?.value??S.settings.api).trim();S.settings.token=($('#stok')?.value??S.settings.token).trim();save();
 if(!S.settings.token){setMsg('Falta el token de acceso (abre “Servidor” abajo).','err');render();return}
 const meta={t:$('#lt').value.trim(),c:$('#lc').value.trim(),n:$('#ln').value};busy='Descargando subtítulos… puede tardar hasta un minuto';render();
 try{const r=await fetch(api()+'/api/transcript?url='+encodeURIComponent(u),{headers:{'X-Access-Token':S.settings.token}});let d={};try{d=await r.json()}catch(e){}
-if(!r.ok){busy=null;setMsg((r.status==401?'Token incorrecto. ':'')+(d.message||('Error '+r.status)),'err');render();return}
+if(!r.ok){busy=null;setMsg((r.status==401?'Token incorrecto. ':'')+(d.message||('Error '+r.status))+(/^(youtube_error|descarga_fallida|upstream_)/.test(d.error||'')?' YouTube está bloqueando al servidor: usa “Importar subtítulos (.srt / .vtt)” más abajo con el archivo de subtítulos del video.':''),'err');render();return}
 const v=d.video;const segs=d.segments.map(g=>({s:g.start_sec,e:g.end_sec,t:g.text,...(g.gap?{g:1}:{})}));
 let l=S.lives.find(x=>x.videoId==v.id);if(!l){l={id:uid(),cands:[],notes:meta.n};S.lives.push(l)}
-Object.assign(l,{videoId:v.id,url:u,title:meta.t||l.title||v.title,channel:meta.c||l.channel||v.channel,segs,track:d.track.type+' '+d.track.lang,duration:v.duration});S.active=l.id;busy=null;
+Object.assign(l,{videoId:v.id,url:u,title:meta.t||l.title||v.title,channel:meta.c||l.channel||v.channel,segs,track:d.track.type+' '+d.track.lang,duration:v.duration});S.active=l.id;busy=null;form={lu:'',lt:'',lc:'',ln:'',sub:''};
 setMsg(`Transcripción lista: ${segs.length} líneas (${d.track.type}, ${d.track.lang}${d.cached?', en caché':''}).`+(v.is_live?' El live sigue en curso: la transcripción puede estar incompleta.':''),'ok');save();tab='texto';render()}
 catch(e){busy=null;setMsg('No se pudo conectar con el servidor ('+e.message+'). Revisa la URL de la API.','err');render()}}
 async function sha(s){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}

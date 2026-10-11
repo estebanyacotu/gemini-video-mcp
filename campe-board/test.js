@@ -50,6 +50,14 @@ async function run(){
   assert.equal(response.rawSrt,srt);
   assert.equal(response.totalCues,cues.length);
   assert(response.full&&response.clips.length>=3);
+  const imported=await fetch(root+"/api/import-srt",{method:"POST",headers:{"Content-Type":"application/json","Cookie":cookie},body:JSON.stringify({url:data.url,rawSrt:srt})});
+  const importedBody=await imported.json();
+  assert.equal(imported.status,200,JSON.stringify(importedBody));
+  assert.equal(importedBody.rawSrt,srt);
+  assert.equal(importedBody.totalCues,cues.length);
+  assert(importedBody.clips.length>=3);
+  const noAuthImport=await fetch(root+"/api/import-srt",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:data.url,rawSrt:srt})});
+  assert.equal(noAuthImport.status,401);
   const invalid=await fetch(root+"/api/extract",{method:"POST",headers:{"Content-Type":"application/json","Cookie":cookie},body:JSON.stringify({url:"https://evil.example/video"})});
   assert.equal(invalid.status,400);
   console.log("PASS: JS UI, parsing SRT, minería, autenticación, API y URL segura");

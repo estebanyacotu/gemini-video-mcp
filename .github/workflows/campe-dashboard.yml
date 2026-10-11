@@ -1,4 +1,4 @@
-name: CampeNEWS tablero tests
+name: CampeNEWS Supadata Tests
 on:
   push:
     branches: [campe-news-dashboard]
@@ -11,22 +11,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Validate UI, SRT and private extraction API
+      - name: Validate Android interface, session and SRT import
         run: node campe-board/test.js
-      - name: Validate autonomous audio recognition fallback
-        run: node campe-board/test-auto.js
-      - name: Verify Gemini 3.8 priority and fallback to 3.6
-        run: node campe-board/test-gemini-models.js
-      - name: Validate full private extraction job from URL to ranked clips
-        run: node campe-board/test-jobs.js
-  remote-captions-probe:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - name: Probe YouTube external caption availability (nonblocking)
-        timeout-minutes: 5
-        run: node campe-board/integration.js
+      - name: Validate Supadata transcript and asynchronous jobs
+        run: node campe-board/test-supadata.js

@@ -1,6 +1,7 @@
 "use strict";
 const BASE="https://generativelanguage.googleapis.com/v1beta";
 const MODEL=process.env.GEMINI_MODEL||"gemini-3.8-flash";
+const FALLBACK_MODEL=process.env.GEMINI_FALLBACK_MODEL||"gemini-3.6-flash";
 const KEY=process.env.GEMINI_API_KEY||"";
 function statusError(http,body){
  const code=String(body?.error?.status||"ERROR");
@@ -26,22 +27,35 @@ async function googleFetch(url,options={},timeout=150000){
 }
 async function analyzeVideo(url,instruction){
  if(!/^https:\/\/www\.youtube\.com\/watch\?v=[\w-]{11}$/.test(url))throw Error("URL YouTube inválida.");
- const body=await googleFetch("/models/"+encodeURIComponent(MODEL)+":generateContent",{
-  method:"POST",body:JSON.stringify({
+ const payload=JSON.stringify({
    contents:[{role:"user",parts:[
     {file_data:{file_uri:url}},
     {text:instruction}
    ]}],
-   generationConfig:{temperature:0,maxOutputTokens:8192}
-  })
- },170000);
+   generationConfig:{temperature:0,maxOutputTokens:16384}
+  });
+ let body,usedModel=MODEL,fallbackFrom=null;
+ try{
+  body=await googleFetch("/models/"+encodeURIComponent(MODEL)+":generateContent",{
+   method:"POST",body:payload
+  },170000);
+ }catch(e){
+  const transient=[429,500,502,503,504].includes(e.status)||/tardó demasiado|UNAVAILABLE|RESOURCE_EXHAUSTED/i.test(String(e.message||""));
+  if(!transient||!FALLBACK_MODEL||FALLBACK_MODEL===MODEL)throw e;
+  console.warn("Gemini primary model capacity error:",e.status||e.reason||"timeout","— using fallback model");
+  fallbackFrom=MODEL;
+  usedModel=FALLBACK_MODEL;
+  body=await googleFetch("/models/"+encodeURIComponent(FALLBACK_MODEL)+":generateContent",{
+   method:"POST",body:payload
+  },170000);
+ }
  const candidate=body.candidates?.[0];
  const output=(candidate?.content?.parts||[]).map(p=>p.text||"").join("\n").trim();
  if(!output){
   const reason=candidate?.finishReason||body.promptFeedback?.blockReason||"sin salida";
   throw Error("Google no proporcionó transcripción ni información del video: "+String(reason));
  }
- return {text:output};
+ return {text:output,model:usedModel,...(fallbackFrom?{fallbackFrom}:{})};
 }
 async function testCredential(){
  if(!KEY)return {ok:false,status:"sin clave"};
@@ -65,6 +79,6 @@ async function testVideo(url){
  const output=await analyzeVideo(url,
   "Comprueba si puedes acceder al video real y reconocer su audio. Responde solo JSON: {\"accessible\":true/false,\"duration_seconds\":numero}. Incluye duración solo si es verificable. No inventes.");
  let json=null;try{json=JSON.parse(output.text.match(/\{[\s\S]*?\}/)?.[0]||"")}catch{}
- return {ok:json?.accessible===true,duration:Number(json?.duration_seconds)||0};
+ return {ok:json?.accessible===true,duration:Number(json?.duration_seconds)||0,model:output.model};
 }
 module.exports={analyzeVideo,testCredential,testGeneration,testVideo};

@@ -1,0 +1,1 @@
+window.PASS_HASH="";

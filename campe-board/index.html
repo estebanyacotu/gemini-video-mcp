@@ -23,7 +23,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}a{color:var(--ho
 <header class="top"><div class="topin"><div class="brand"><div class="mark">CN</div><div><small>CONTROL EDITORIAL</small><strong>FÓRMULA CAMPE NEWS</strong></div></div><div class="topright"><span class="priv">● PRIVADO</span><form method="post" action="/logout"><button class="ghost" type="submit">Salir</button></form></div></div></header>
 <div class="wrap">
 <div class="hero"><div><div class="kicker">MINERÍA / SELECCIÓN / RECONSTRUCCIÓN</div><h1>Mesa de cortes</h1><p>Registra un live, compara de 3 a 5 candidatos y decide qué editar primero. Sin análisis externo de noticias.</p></div><div class="pills"><span class="pill">Android primero</span><span class="pill">Audio literal</span><span class="pill">Ranking editorial</span></div></div>
-<section class="section"><div class="heading"><h2>01 · Registrar fuente</h2><span class="help">Transcripción real antes de crear candidatos</span></div><form id="register" class="gridform"><div class="field"><label for="liveUrl">Enlace del live de YouTube</label><input id="liveUrl" type="url" inputmode="url" placeholder="https://www.youtube.com/live/..." autocomplete="off" required></div><div class="field"><label for="liveName">Título / identificación</label><input id="liveName" placeholder="Ej. Live del 10 de octubre" maxlength="140"></div><button class="primary" type="submit" id="extractButton">Extraer live y subtítulos</button></form><div class="listnote" id="extractStatus" role="status" aria-live="polite">Extracción auténtica de subtítulos de YouTube: se guardará el SRT completo, con marcas de tiempo. Si falla, no se crean candidatos.</div></section>
+<section class="section"><div class="heading"><h2>01 · Registrar fuente</h2><span class="help">Transcripción real antes de crear candidatos</span></div><form id="register" class="gridform"><div class="field"><label for="liveUrl">Enlace del live de YouTube</label><input id="liveUrl" type="url" inputmode="url" placeholder="https://www.youtube.com/live/..." autocomplete="off" required></div><div class="field"><label for="liveName">Título / identificación</label><input id="liveName" placeholder="Ej. Live del 10 de octubre" maxlength="140"></div><button class="primary" type="submit" id="extractButton">Extraer live y subtítulos</button></form><div class="actions" style="margin-top:12px"><label for="srtFile" class="secondary tiny" style="cursor:pointer">Alternativa: importar SRT auténtico</label><input id="srtFile" type="file" accept=".srt,text/plain" hidden></div><div class="listnote">Si YouTube limita la extracción automática, carga un SRT real obtenido de tu transcriptor. Se utilizará la URL escrita arriba y no se generará texto ficticio.</div><div class="listnote" id="extractStatus" role="status" aria-live="polite">Extracción auténtica de subtítulos de YouTube: se guardará el SRT completo, con marcas de tiempo. Si falla, no se crean candidatos.</div></section>
 <section class="section" id="workspace" hidden><div class="heading"><h2>02 · Fuente activa</h2><div class="actions"><button class="ghost tiny" data-action="exportjson" type="button">Respaldo JSON</button><button class="ghost tiny" type="button" id="importButton">Importar</button><input type="file" accept=".json,application/json" id="importFile" hidden><button class="ghost tiny danger" data-action="dellive" type="button">Eliminar live</button></div></div><div class="sourcebar"><div class="field"><label for="liveSelect">Seleccionar live guardado</label><select id="liveSelect"></select></div><div class="help" id="sourceInfo"></div></div></section>
 <div id="workcontent" hidden><div class="tabbar" role="tablist" aria-label="Vistas del tablero"><button type="button" class="tab active" data-tab="ranking" role="tab" aria-selected="true">Ranking de clips</button><button type="button" class="tab" data-tab="cuts" role="tab" aria-selected="false">Tabla de cortes</button><button type="button" class="tab" data-tab="transcript" role="tab" aria-selected="false">Transcripción</button></div><div class="stats"><div class="stat"><strong id="liveCount">0</strong><span>Lives registrados</span></div><div class="stat"><strong id="clipCount">0/5</strong><span>Candidatos en el live</span></div><div class="stat"><strong id="bestScore">—</strong><span>Mejor puntuación / 10</span></div></div><div id="rankingView"><div class="heading"><h2>03 · Priorizar candidatos</h2><button class="secondary" data-action="addclip" id="addClip">+ Añadir candidato</button></div><p class="help">Ranking editorial heurístico: hook 50%, tensión 30%, autonomía 20%. Audio tomado de los subtítulos extraídos, sin creación de frases nuevas.</p><div id="ranking" class="ranking"></div></div><div id="cutsView" hidden><section class="section"><div class="cuthead"><div class="field"><label for="focusSelect">Candidato para reconstrucción no lineal</label><select id="focusSelect"></select></div><div class="actions"><button type="button" class="secondary" data-action="copycuts">Copiar tabla</button><button type="button" class="secondary" data-action="exportcsv">CSV de cortes</button></div></div><p class="help" style="margin-bottom:0">El orden es el del montaje propuesto, no necesariamente el del live. El texto se obtiene automáticamente de los subtítulos al cambiar IN/OUT.</p><div id="cutSummary" class="runtime"></div><div id="cutList" class="cutlist"></div><button type="button" class="primary" data-action="addcut">+ Añadir segmento</button></section></div><div id="transcriptView" hidden><section class="section"><div class="heading"><div><h2>Transcripción fiel del video completo</h2><div class="help" id="transcriptMeta">Fuente: subtítulos originales de YouTube</div></div><div class="actions"><button class="secondary tiny" type="button" data-action="exportsrt">Descargar SRT</button><button class="secondary tiny" type="button" data-action="exporttxt">Descargar TXT</button></div></div><div class="field"><label for="searchTranscript">Buscar palabras en todo el live</label><input id="searchTranscript" placeholder="Ej. petróleo, Trump, bolsillo"></div><div class="listnote" id="transcriptCount"></div><div id="transcriptRows" class="cutlist"></div><div class="actions" style="justify-content:space-between"><button id="previousTranscript" class="secondary" type="button">Anterior</button><span id="transcriptPage" class="help"></span><button id="nextTranscript" class="secondary" type="button">Siguiente</button></div></section></div></div>
 <div class="empty" id="empty"><h3>Sin lives extraídos</h3><p>Pega una URL de YouTube. Primero se obtendrá la transcripción completa y después se habilitarán los candidatos con audio literal y timestamps.</p></div>
@@ -99,6 +99,18 @@ f("Audio literal del corte",'<textarea class="miniinput" rows="3" readonly aria-
 '<div class="listnote">Duración de este segmento: '+fmt(diff(x.start,x.end))+'</div></div>';}).join(""):'<div class="empty"><h3>Sin segmentos</h3><p>Agrega un tramo, escribe IN/OUT y su audio literal se llenará desde el SRT. Después reordena.</p></div>';
 }
 function cutInput(x,k,p){return '<input class="miniinput" data-cut="'+safe(x.id)+'" data-field="'+k+'" value="'+safe(x[k])+'" placeholder="'+p+'" inputmode="text">';}
+function applyExtractedData(data,n){
+ if(!data.full||!data.rawSrt||!Array.isArray(data.cues)||!data.cues.length)throw Error("La transcripción no llegó completa.");
+ var l={id:id(),url:data.url,videoId:data.videoId,title:n||data.title,date:new Date().toLocaleDateString("es-MX"),
+  clips:data.clips||[],transcript:{cues:data.cues,rawSrt:data.rawSrt,language:data.language,
+  subtitleType:data.subtitleType,source:data.source,duration:data.duration,channel:data.channel}};
+ state.lives.unshift(l);state.active=l.id;state.focus=l.clips[0]?.id||null;state.tab="transcript";transcriptPage=0;transcriptSearch="";
+ document.getElementById("searchTranscript").value="";
+ save();render();document.getElementById("register").reset();
+ status.textContent="Éxito: "+data.totalCues+" segmentos reales y "+l.clips.length+" candidatos generados. Puedes revisar el texto íntegro.";
+ toast("SRT completo recibido: "+data.totalCues+" segmentos");
+
+}
 document.getElementById("register").addEventListener("submit",async function(e){
  e.preventDefault();
  var u=document.getElementById("liveUrl").value.trim(),n=document.getElementById("liveName").value.trim(),btn=document.getElementById("extractButton"),status=document.getElementById("extractStatus");
@@ -109,17 +121,22 @@ document.getElementById("register").addEventListener("submit",async function(e){
   var response=await fetch("/api/extract",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:u})});
   var data=await response.json();
   if(!response.ok||data.error)throw Error(data.error||"Extracción fallida.");
-  if(!data.full||!data.rawSrt||!Array.isArray(data.cues)||!data.cues.length)throw Error("La transcripción no llegó completa.");
-  var l={id:id(),url:data.url,videoId:data.videoId,title:n||data.title,date:new Date().toLocaleDateString("es-MX"),
-   clips:data.clips||[],transcript:{cues:data.cues,rawSrt:data.rawSrt,language:data.language,
-   subtitleType:data.subtitleType,source:data.source,duration:data.duration,channel:data.channel}};
-  state.lives.unshift(l);state.active=l.id;state.focus=l.clips[0]?.id||null;state.tab="transcript";transcriptPage=0;transcriptSearch="";
-  document.getElementById("searchTranscript").value="";
-  save();render();document.getElementById("register").reset();
-  status.textContent="Éxito: "+data.totalCues+" segmentos reales y "+l.clips.length+" candidatos generados. Puedes revisar el texto íntegro.";
-  toast("SRT completo recibido: "+data.totalCues+" segmentos");
+  applyExtractedData(data,n);
  }catch(err){status.textContent="Extracción fallida: "+err.message+" No se crearon candidatos.";toast("No se pudo extraer el live.");}
  finally{btn.disabled=false;btn.textContent="Extraer live y subtítulos";}
+});
+document.getElementById("srtFile").addEventListener("change",async function(e){
+ var file=e.target.files[0];if(!file)return;
+ var u=document.getElementById("liveUrl").value.trim(),n=document.getElementById("liveName").value.trim(),status=document.getElementById("extractStatus");
+ try{
+  if(!u)throw Error("Primero pega la URL de YouTube a la que corresponde el archivo.");
+  if(file.size>7000000)throw Error("SRT muy grande: máximo 7 MB.");
+  status.textContent="Analizando archivo SRT real…";
+  var result=await fetch("/api/import-srt",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:u,rawSrt:await file.text()})});
+  var data=await result.json();if(!result.ok||data.error)throw Error(data.error||"No pudo importarse el SRT.");
+  applyExtractedData(data,n);
+ }catch(err){status.textContent="No se importó el SRT: "+err.message;toast(err.message);}
+ e.target.value="";
 });
 document.getElementById("liveSelect").addEventListener("change",function(e){state.active=e.target.value;state.focus=null;state.tab="ranking";save();render();});
 document.getElementById("focusSelect").addEventListener("change",function(e){state.focus=e.target.value;save();render();});

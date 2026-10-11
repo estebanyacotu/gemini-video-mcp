@@ -39,7 +39,7 @@ function videoUrl(raw){
 }
 async function mcpTool(name,args){
  if(name==="analizar_video"&&process.env.GEMINI_API_KEY) return analyzeVideo(args.url,args.instruccion);
- const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),150000);
+ const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),name==="get_raw_subtitles"?65000:90000);
  try{
   const response=await fetch(MCP_URL,{method:"POST",signal:controller.signal,headers:{
    "Content-Type":"application/json","Accept":"application/json, text/event-stream",
@@ -82,27 +82,28 @@ async function extractSource(url,onProgress=()=>{}){
   parseSrt(subtitles.content);
  }catch(e){subtitleError=e;subtitles=null;console.warn("Original captions unavailable:",e.message.slice(0,170));}
  onProgress({stage:subtitles?"Leyendo datos del live":"Subtítulos no disponibles: preparando reconocimiento de audio",progress:8});
- try{info=await mcpTool("get_video_info",{url})}catch(e){console.warn("Metadata unavailable:",e.message.slice(0,170));}
+ if(subtitles||!process.env.GEMINI_API_KEY){
+  try{info=await mcpTool("get_video_info",{url})}catch(e){console.warn("Metadata unavailable:",e.message.slice(0,170));}
+ }
  let duration=Number(info.duration)||0;
  if(!subtitles&&!duration){
-  onProgress({stage:"YouTube no proporcionó metadatos. Consultando acceso directo al audio con Gemini",progress:9});
-  try{
-   const answer=await mcpTool("analizar_video",{url,instruccion:[
-    "Comprueba si puedes acceder al video real de esta URL.",
-    "Devuelve exclusivamente un JSON con dos campos: accessible (booleano) y duration_seconds (entero).",
-    "Solo indica accessible=true si puedes abrir realmente el video y conocer su duración.",
-    "Si no puedes acceder o no sabes su duración exacta, devuelve {\"accessible\":false,\"duration_seconds\":0}.",
-    "No inventes datos; no describas el contenido."
-   ].join("\n")});
-   const matched=String(answer.text||"").match(/\{[\s\S]*?\}/);
-   const meta=matched?JSON.parse(matched[0]):null;
-   if(meta?.accessible===true&&Number.isInteger(meta.duration_seconds)&&meta.duration_seconds>0&&meta.duration_seconds<=10800){
-    duration=meta.duration_seconds;
+  onProgress({stage:"Consultando video directamente con Gemini",progress:9});
+  if(process.env.GEMINI_API_KEY){
+   try{
+    const meta=await testVideo(url);
+    if(meta.ok&&Number.isFinite(meta.duration)&&meta.duration>0&&meta.duration<=10800)duration=meta.duration;
+   }catch(e){
+    const msg=String(e.message||e);
+    if(/403|PERMISSION_DENIED/i.test(msg))throw Error("Google no tiene permiso para abrir este live (403). La clave sí funciona con otros videos.");
+    throw Error("Google no pudo acceder al video: "+msg.slice(0,150));
    }
-  }catch(e){
-   console.warn("Gemini cannot access video:",String(e.message).slice(0,170));
-   if(/403|PERMISSION_DENIED/i.test(String(e.message)))
-    throw Error("Ni YouTube ni Gemini pueden abrir el live (permiso denegado, 403). Revisa la URL y la disponibilidad del video.");
+  }else{
+   try{
+    const answer=await mcpTool("analizar_video",{url,instruccion:"Abre el video y responde solo JSON con accessible (booleano) y duration_seconds (entero). No inventes duración."});
+    const matched=String(answer.text||"").match(/\{[\s\S]*?\}/);
+    const meta=matched?JSON.parse(matched[0]):null;
+    if(meta?.accessible===true&&Number.isInteger(meta.duration_seconds)&&meta.duration_seconds>0)duration=meta.duration_seconds;
+   }catch(e){console.warn("Gemini metadata inaccessible:",String(e.message).slice(0,120));}
   }
  }
  if(subtitles){

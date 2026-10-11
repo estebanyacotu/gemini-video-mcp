@@ -6,6 +6,9 @@ from urllib.parse import urlparse, parse_qs
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.environ.get('CACHE_DIR', os.path.join(HERE, 'cache'))
 TOKEN = os.environ.get('ACCESS_TOKEN', '')
+UPSTREAM = os.environ.get('TRANSCRIPT_UPSTREAM_MCP', 'https://gemini-video-mcp-4ev0.onrender.com/mcp')  # vacío = desactivado
+SOURCE_MODE = os.environ.get('TRANSCRIPT_SOURCE', 'auto')  # auto = yt-dlp local y, si falla, upstream; upstream = solo upstream
+PREF_LANGS = [x for x in os.environ.get('TRANSCRIPT_PREF_LANGS', 'es,pt,en').split(',') if x]
 STATIC = {'index.html', 'app.js', 'style.css', 'example.js', 'manifest.json', 'icon.svg', 'config.js'}
 MIME = {'html': 'text/html; charset=utf-8', 'js': 'text/javascript; charset=utf-8', 'css': 'text/css', 'json': 'application/json', 'svg': 'image/svg+xml'}
 LOCKS, LL = {}, threading.Lock()
@@ -81,14 +84,109 @@ def build_segments(words, gap_s=8.0):
     flush()
     return segs
 
+
+def parse_srt(txt):
+    """SRT (rolling de auto-captions) -> [(inicio, palabra, fin_cue)]. Quita líneas ya emitidas en el cue anterior; no altera palabras."""
+    words, prev = [], set()
+    for b in re.split(r'\n\s*\n', txt.replace('\r\n', '\n').strip()):
+        ls = b.split('\n')
+        i = next((k for k, l in enumerate(ls) if '-->' in l), None)
+        if i is None: continue
+        m = re.search(r'(\d+:\d+:\d+[.,]\d+)\s*-->\s*(\d+:\d+:\d+[.,]\d+)', ls[i])
+        if not m: continue
+        a, e = ts(m.group(1)), ts(m.group(2))
+        lines = [re.sub(r'<[^>]+>', '', l).strip() for l in ls[i + 1:]]
+        lines = [l for l in lines if l]
+        new = [l for l in lines if l not in prev]
+        prev = set(lines)
+        if not new: continue
+        ws = ' '.join(new).split(); dur = min(max(e - a, 0.5), 0.5 * len(ws)); step = dur / len(ws)
+        for k, w in enumerate(ws): words.append((round(a + k * step, 2), w, e))
+    return words
+
+def mcp_call(name, args, timeout=150):
+    import urllib.request
+    body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': name, 'arguments': args}}).encode()
+    rq = urllib.request.Request(UPSTREAM, body, {'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-03-26'})
+    try:
+        raw = urllib.request.urlopen(rq, timeout=timeout).read().decode('utf-8')
+    except Exception as ex:
+        raise Err(502, 'upstream_error', 'No se pudo contactar el servicio de transcripción externo: ' + str(ex)[:160])
+    msg = None
+    if raw.lstrip().startswith('{'): msg = json.loads(raw)
+    else:
+        for l in raw.splitlines():
+            if l.startswith('data:'):
+                try: msg = json.loads(l[5:].strip()); 
+                except Exception: pass
+    if not msg or 'result' not in msg: raise Err(502, 'upstream_error', 'Respuesta inesperada del servicio externo: ' + str((msg or {}).get('error') or raw[:120]))
+    r = msg['result']; txt = ''.join(c.get('text', '') for c in r.get('content', []) if c.get('type') == 'text')
+    if r.get('isError'): raise Err(502, 'upstream_sin_subtitulos', 'El servicio externo no pudo obtener subtítulos: ' + txt[:220])
+    sc = r.get('structuredContent')
+    if sc is None:
+        try: sc = json.loads(txt)
+        except Exception: raise Err(502, 'upstream_error', 'Respuesta no interpretable del servicio externo.')
+    return sc
+
+def fetch_upstream(vid):
+    url = 'https://www.youtube.com/watch?v=' + vid
+    try: info = mcp_call('get_video_info', {'url': url}, 60)
+    except Err: info = {}
+    av = mcp_call('get_available_subtitles', {'url': url}, 90)
+    official, auto = av.get('official') or [], av.get('auto') or []
+    def code(x): return x if isinstance(x, str) else (x.get('lang') or x.get('code') or '')
+    official, auto = [code(x) for x in official], [code(x) for x in auto]
+    orig = [k for k in auto if k.endswith('-orig')]
+    if official:
+        kind, lang = 'oficial', next((l for l in PREF_LANGS if l in official), official[0])
+    elif orig:
+        pick = next((l + '-orig' for l in PREF_LANGS if l + '-orig' in orig), None)
+        if not pick: raise Err(502, 'upstream_idioma_ambiguo', 'El servicio externo lista pistas originales (' + ', '.join(orig[:5]) + ') pero ninguna está entre los idiomas preferidos; no se eligió ninguna para evitar traducciones.')
+        kind, lang = 'automatico', pick
+    else:
+        raise Err(502, 'upstream_sin_subtitulos', 'El servicio externo tampoco ve subtítulos para este video ahora mismo (puede estar bloqueado por YouTube). No se genera texto inventado.')
+    chunks, cursor = [], None
+    for _ in range(60):
+        a = {'url': url, 'type': 'official' if kind == 'oficial' else 'auto', 'lang': lang, 'format': 'srt', 'response_limit': 200000}
+        if cursor: a['next_cursor'] = cursor
+        sc = mcp_call('get_raw_subtitles', a)
+        chunks.append(sc.get('content') or '')
+        if not sc.get('is_truncated'): break
+        cursor = sc.get('next_cursor')
+        if not cursor: raise Err(502, 'upstream_truncado', 'El servicio externo devolvió la transcripción incompleta y sin cursor para continuar.')
+    else: raise Err(502, 'upstream_truncado', 'Demasiadas páginas del servicio externo.')
+    words = parse_srt(''.join(chunks))
+    if not words: raise Err(502, 'upstream_sin_subtitulos', 'El subtítulo recibido del servicio externo está vacío.')
+    segs = build_segments(words)
+    dur = info.get('duration') or None
+    return {'video': {'id': vid, 'title': info.get('title'), 'channel': info.get('channel') or info.get('uploader'), 'duration': dur,
+                      'is_live': bool(info.get('isLive')), 'was_live': bool(info.get('wasLive')), 'url': url},
+            'track': {'type': kind, 'lang': lang}, 'segments': segs, 'cached': False, 'source': 'upstream_mcp'}
+
 def fetch(vid):
+    try: return fetch_cached(vid)
+    except Err as e:
+        if SOURCE_MODE != 'upstream' and UPSTREAM and e.code in ('youtube_error', 'descarga_fallida'):
+            try: d = fetch_upstream(vid)
+            except Err as e2: raise Err(502, e2.code, e2.msg + ' (YouTube bloqueó la consulta directa: ' + e.msg[:90] + ')')
+            save_cache(vid, d); return d
+        raise
+
+def save_cache(vid, d):
+    if not d['video'].get('is_live'):
+        os.makedirs(CACHE, exist_ok=True); json.dump(d, open(os.path.join(CACHE, vid + '.json'), 'w'), ensure_ascii=False)
+
+def fetch_cached(vid):
     path = os.path.join(CACHE, vid + '.json')
     if os.path.exists(path):
-        d = json.load(open(path)); d['cached'] = True; return d
+        d = json.load(open(path)); d['cached'] = True; d.setdefault('source', 'local_ytdlp'); return d
     with LL: lock = LOCKS.setdefault(vid, threading.Lock())
     with lock:
         if os.path.exists(path):
-            d = json.load(open(path)); d['cached'] = True; return d
+            d = json.load(open(path)); d['cached'] = True; d.setdefault('source', 'local_ytdlp'); return d
+        if SOURCE_MODE == 'upstream':
+            if not UPSTREAM: raise Err(502, 'upstream_error', 'Servicio externo no configurado.')
+            d = fetch_upstream(vid); save_cache(vid, d); return d
         import yt_dlp
         url = 'https://www.youtube.com/watch?v=' + vid
         tmp = tempfile.mkdtemp(prefix='yt_')
@@ -125,7 +223,7 @@ def fetch(vid):
             segs = build_segments(words)
             d = {'video': {'id': vid, 'title': info.get('title'), 'channel': info.get('channel') or info.get('uploader'), 'duration': info.get('duration'),
                            'is_live': bool(info.get('is_live')), 'was_live': bool(info.get('was_live')), 'url': 'https://www.youtube.com/watch?v=' + vid},
-                 'track': {'type': kind, 'lang': lang}, 'segments': segs, 'cached': False}
+                 'track': {'type': kind, 'lang': lang}, 'segments': segs, 'cached': False, 'source': 'local_ytdlp'}
             if not info.get('is_live'):
                 os.makedirs(CACHE, exist_ok=True); json.dump(d, open(path, 'w'), ensure_ascii=False)
             return d

@@ -39,7 +39,7 @@ function materialize(url,raw,opts={}){
 async function fromGemini({url,duration,mcpTool,onProgress=()=>{},title="",channel=""}){
  if(!Number.isFinite(duration)||duration<=0)throw Error("No se obtuvo la duración del live para una transcripción completa.");
  if(duration>3*3600)throw Error("Este prototipo transcribe automáticamente hasta tres horas por live.");
- const span=360,n=Math.ceil(duration/span),all=[];
+ const span=360,n=Math.ceil(duration/span),all=[],modelsUsed=new Set();
  for(let i=0;i<n;i++){
   const start=i*span,end=Math.min(duration,(i+1)*span);
   onProgress({stage:"Reconociendo audio con Gemini · bloque "+(i+1)+" de "+n,progress:Math.round(i/n*95)});
@@ -53,6 +53,7 @@ async function fromGemini({url,duration,mcpTool,onProgress=()=>{},title="",chann
    "Mantén todas las frases audibles de principio a fin del intervalo."
   ].join("\n");
   const answer=await mcpTool("analizar_video",{url,instruccion:instruction});
+  if(answer.model)modelsUsed.add(answer.model);
   const output=answer.text||answer.result||"";
   if(typeof output!=="string"||!output.trim())throw Error("Gemini no devolvió audio transcrito en bloque "+(i+1)+".");
   const chunk=parseGenerated(output,start,end);
@@ -64,8 +65,8 @@ async function fromGemini({url,duration,mcpTool,onProgress=()=>{},title="",chann
  if(all.length<3)throw Error("No se obtuvo suficiente audio hablado para generar clips.");
  all.sort((a,b)=>a.start-b.start);
  const unique=all.filter((x,i)=>!i||x.start!==all[i-1].start||x.text!==all[i-1].text);
- return materialize(url,toSrt(unique),{title,channel,duration,source:"Gemini · reconocimiento de audio",
-  subtitleType:"ai",language:"idioma del audio",method:"Audio transcrito con IA y ranking editorial",
+ return materialize(url,toSrt(unique),{title,channel,duration,source:(modelsUsed.size?"Gemini "+[...modelsUsed].join(" + "):"Gemini")+" · reconocimiento de audio",
+  modelsUsed:[...modelsUsed],subtitleType:"ai",language:"idioma del audio",method:"Audio transcrito con IA y ranking editorial",
   transcriptionDisclaimer:"Transcripción generada por IA desde audio: no equivale a subtítulos literales certificados. Puede contener errores; revisa el audio."});
 }
 module.exports={parseGenerated,toSrt,materialize,fromGemini,timeValue,srtTime};

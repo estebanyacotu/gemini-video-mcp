@@ -61,6 +61,22 @@ async function mcpTool(name,args){
   return value;
  }finally{clearTimeout(timeout)}
 }
+async function importOriginalSrt(req,res){
+ if(!auth(req))return send(res,401,JSON.stringify({error:"Acceso no autorizado."}),"application/json");
+ const origin=req.headers.origin;if(origin){try{if(new URL(origin).host!==req.headers.host)return send(res,403,JSON.stringify({error:"Origen no autorizado."}),"application/json");}catch{return send(res,403,JSON.stringify({error:"Origen inválido."}),"application/json");}}
+ try{
+  const body=await readJson(req,8000000),url=videoUrl(body.url);
+  if(typeof body.rawSrt!=="string"||body.rawSrt.length>7500000)throw Error("Se necesita el archivo SRT real.");
+  const cues=parseSrt(body.rawSrt),last=cues[cues.length-1].end;
+  const clips=mine(cues,last,5);
+  return send(res,200,JSON.stringify({
+   url,videoId:url.slice(-11),title:"Live "+url.slice(-11),
+   rawSrt:body.rawSrt,cues,clips,totalCues:cues.length,
+   language:"sin especificar",subtitleType:"importado",source:"archivo SRT original",duration:last,full:true,
+   method:"SRT aportado por el usuario; ranking editorial heurístico"
+  }),"application/json; charset=utf-8");
+ }catch(e){return send(res,400,JSON.stringify({error:String(e.message).slice(0,300)}),"application/json; charset=utf-8")}
+}
 function readJson(req,max=4096){
  return new Promise((resolve,reject)=>{
   let body="",bytes=0;
@@ -106,6 +122,7 @@ async function extract(req,res){
 const server=http.createServer((req,res)=>{
  if(!PASSWORD||!SESSION_SECRET){return send(res,503,"Servicio aún no configurado.","text/plain; charset=utf-8");}
  let pathname;try{pathname=new URL(req.url,"http://local").pathname;}catch(e){return send(res,400,"Ruta inválida.","text/plain");}
+ if(pathname==="/api/import-srt"&&req.method==="POST"){importOriginalSrt(req,res);return;}
  if(pathname==="/api/extract"&&req.method==="POST"){extract(req,res);return;}
  if(pathname==="/health"&&req.method==="GET")return send(res,200,JSON.stringify({ok:true,app:"campe-news-board",storage:"browser-local"}),"application/json; charset=utf-8");
  if(pathname==="/logout"&&req.method==="POST")return redirect(res,cookie("",0));

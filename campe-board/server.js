@@ -22,7 +22,7 @@ function limit(addr){let now=Date.now(),a=attempts.get(addr)||[];a=a.filter(t=>n
 
 const {parseSrt,mine}=require("./miner");
 const {materialize,fromGemini}=require("./auto-transcript");
-const {analyzeVideo,testCredential,testGeneration,testVideo}=require("./gemini-direct");
+const {extractSupadata}=require("./supadata");
 const jobs=new Map();
 const MCP_URL=process.env.TRANSCRIPTOR_MCP_URL||"https://gemini-video-mcp-4ev0.onrender.com/mcp";
 function videoUrl(raw){
@@ -136,6 +136,8 @@ async function startExtraction(req,res){
  try{
   validateOrigin(req);
   const body=await readJson(req),url=videoUrl(body.url),owner=sessionFingerprint(req);
+  const credential=typeof body.supadataKey==="string"?body.supadataKey.trim():process.env.SUPADATA_API_KEY;
+  if(!credential)return apiSend(res,400,{error:"Pega tu clave de Supadata para transcribir el live. Consíguela en dash.supadata.ai."});
   sweepJobs();
   const active=[...jobs.values()].filter(x=>x.owner===owner&&x.status==="running");
   if(active.length)return apiSend(res,409,{error:"Ya hay un live en proceso. Espera el resultado antes de enviar otro."});
@@ -144,7 +146,7 @@ async function startExtraction(req,res){
   jobs.set(id,job);
   apiSend(res,202,{id,status:"running",stage:job.stage,progress:0});
   void (async()=>{
-   try{job.result=await extractSource(url,step=>{job.stage=step.stage;job.progress=step.progress;});job.status="complete";job.progress=100;job.stage="Transcripción y ranking terminados";}
+   try{job.result=await extractSupadata(url,credential,step=>{job.stage=step.stage;job.progress=step.progress;});job.status="complete";job.progress=100;job.stage="Transcripción y ranking terminados";}
    catch(e){job.status="failed";job.stage="No se completó la extracción";job.error=String(e.message||e).slice(0,380);console.error("Extraction job failed:",job.error);}
   })();
  }catch(e){apiSend(res,/enlace|YouTube|origen|JSON/i.test(e.message)?400:500,{error:String(e.message).slice(0,250)});}
@@ -207,7 +209,7 @@ const server=http.createServer((req,res)=>{
  if(pathname==="/api/jobs"&&req.method==="POST"){startExtraction(req,res);return;}
  if(pathname.startsWith("/api/jobs/")&&req.method==="GET"){extractionProgress(req,res,pathname.slice(10));return;}
  if(pathname==="/api/import-srt"&&req.method==="POST"){importOriginalSrt(req,res);return;}
- if(pathname==="/api/extract"&&req.method==="POST"){extract(req,res);return;}
+ if(pathname==="/api/extract"&&req.method==="POST")return apiSend(res,410,{error:"Actualiza el tablero. Ahora utiliza Supadata para extraer transcripciones."});
  if(pathname==="/health"&&req.method==="GET")return send(res,200,JSON.stringify({ok:true,app:"campe-news-board",storage:"browser-local"}),"application/json; charset=utf-8");
  if(pathname==="/logout"&&req.method==="POST")return redirect(res,cookie("",0));
  if(pathname==="/login"&&req.method==="POST"){
@@ -229,21 +231,4 @@ const server=http.createServer((req,res)=>{
  return send(res,404,"No encontrado.","text/plain; charset=utf-8");
 });
 const port=Number(process.env.PORT||10000);
-server.listen(port,"0.0.0.0",()=>{
- console.log("CampeNEWS board listening on "+port);
- if(process.env.GEMINI_API_KEY){
-  void testCredential().then(x=>console.log("Gemini credential check:",JSON.stringify(x)));
-  void testGeneration().then(x=>console.log("Gemini text generation check:",JSON.stringify(x)));
-  if(process.env.GEMINI_PROBE_VIDEO_URL){
-   void testVideo(process.env.GEMINI_PROBE_VIDEO_URL).then(x=>console.log("Gemini video access check:",JSON.stringify(x))).catch(e=>console.log("Gemini video access check:",e.status||e.reason||e.message.slice(0,120)));
-  }
-  if(process.env.CAMPE_SMOKE_URL){
-   void extractSource(process.env.CAMPE_SMOKE_URL,()=>{}).then(result=>{
-    console.log("CampeNEWS automatic transcription smoke:",JSON.stringify({
-     complete:result.full,source:result.source,cues:result.totalCues,
-     clips:result.clips.length,duration:result.duration
-    }));
-   }).catch(e=>console.log("CampeNEWS automatic transcription smoke FAILED:",String(e.message).slice(0,170)));
-  }
- }
-});
+server.listen(port,"0.0.0.0",()=>console.log("CampeNEWS tablero listo · transcripción Supadata · puerto "+port));

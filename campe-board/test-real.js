@@ -12,7 +12,7 @@ async function main(){
   const login=await fetch(root+"/login",{method:"POST",redirect:"manual",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"password=automated-test-password"});
   assert.equal(login.status,303);
   const cookie=login.headers.get("set-cookie").split(";")[0];
-  const created=await fetch(root+"/api/jobs",{method:"POST",headers:{"Cookie":cookie,"Content-Type":"application/json"},body:JSON.stringify({url:"https://www.youtube.com/watch?v=dQw4w9WgXcQ"})});
+  const created=await fetch(root+"/api/jobs",{method:"POST",headers:{"Cookie":cookie,"Content-Type":"application/json"},body:JSON.stringify({url:process.env.TEST_VIDEO_URL||"https://www.youtube.com/watch?v=dQw4w9WgXcQ"})});
   const start=await created.json();assert.equal(created.status,202,JSON.stringify(start));
   console.log("JOB_CREATED",start.id);
   let state;

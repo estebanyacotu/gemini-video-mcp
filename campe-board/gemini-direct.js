@@ -40,7 +40,7 @@ async function analyzeVideo(url,instruction){
    method:"POST",body:payload
   },170000);
  }catch(e){
-  const transient=[429,500,502,503,504].includes(e.status)||/tardó demasiado|UNAVAILABLE|RESOURCE_EXHAUSTED/i.test(String(e.message||""));
+  const transient=Number.isInteger(e.status)?[429,500,502,503,504].includes(e.status):/tardó demasiado|RESOURCE_EXHAUSTED|\bUNAVAILABLE\b/i.test(String(e.message||""));
   if(!transient||!FALLBACK_MODEL||FALLBACK_MODEL===MODEL)throw e;
   console.warn("Gemini primary model capacity error:",e.status||e.reason||"timeout","— using fallback model");
   fallbackFrom=MODEL;

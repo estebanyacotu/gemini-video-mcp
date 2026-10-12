@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: grok-bot-corte
+    runtime: docker
+    plan: free
+    branch: grok-bot-corte
+    dockerfilePath: ./grok-bot-corte/Dockerfile
+    dockerContext: ./grok-bot-corte
+    healthCheckPath: /api/health
+    envVars:
+      - key: ACCESS_TOKEN
+        generateValue: true
